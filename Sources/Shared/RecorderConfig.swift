@@ -35,10 +35,9 @@ public enum RecorderConfigStore {
     }
 
     public static func load() -> RecorderConfig {
-        guard let prefs = AppGroup.preferences else { return .default }
-        let retention = prefs.object(forKey: Key.retentionSeconds.rawValue) as? Double
-        let bitrate = prefs.object(forKey: Key.bitrateMbps.rawValue) as? Double
-        let mic = prefs.object(forKey: Key.microphoneEnabled.rawValue) as? Bool
+        let retention = SharedPrefs.double(forKey: Key.retentionSeconds.rawValue)
+        let bitrate = SharedPrefs.double(forKey: Key.bitrateMbps.rawValue)
+        let mic = SharedPrefs.bool(forKey: Key.microphoneEnabled.rawValue)
         return RecorderConfig(
             retentionSeconds: retention ?? RecorderConfig.default.retentionSeconds,
             bitrateMbps: bitrate ?? RecorderConfig.default.bitrateMbps,
@@ -47,10 +46,9 @@ public enum RecorderConfigStore {
     }
 
     public static func save(_ config: RecorderConfig) {
-        guard let prefs = AppGroup.preferences else { return }
         let value = config.clamped
-        prefs.set(value.retentionSeconds, forKey: Key.retentionSeconds.rawValue)
-        prefs.set(value.bitrateMbps, forKey: Key.bitrateMbps.rawValue)
-        prefs.set(value.microphoneEnabled, forKey: Key.microphoneEnabled.rawValue)
+        SharedPrefs.set(value.retentionSeconds, forKey: Key.retentionSeconds.rawValue)
+        SharedPrefs.set(value.bitrateMbps, forKey: Key.bitrateMbps.rawValue)
+        SharedPrefs.set(value.microphoneEnabled, forKey: Key.microphoneEnabled.rawValue)
     }
 }

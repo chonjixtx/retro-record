@@ -32,7 +32,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 code: -100,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "无法访问共享存储（App Group 未生效）。\n请用支持 App Group 的证书重新签名，或在签名工具里保留 application-groups 权限。"
+                        "无法访问共享存储。\n用普通证书签名时，请确认描述文件包含 group.com.retro.recorder；\n用 TrollStore 安装时，请确认 App 已获得 platform-application 权限。"
                 ]
             )
             finishBroadcastWithError(error)

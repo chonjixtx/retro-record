@@ -3,8 +3,27 @@ import Foundation
 public enum AppGroup {
     public static let identifier = AppIdentifiers.appGroup
 
+    /// TrollStore / 越狱环境下，主 App 与扩展都能读写的公共目录。
+    /// 正常证书签名时这个路径写不进去（沙盒会拒绝），会自动回落到 App Group。
+    private static let trollStoreFallbackPath = "/var/mobile/Library/RetroRecorder"
+
     public static var containerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
+        // 1) 标准路径：App Group（需要付费证书 + 描述文件含该 group）
+        if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) {
+            return url
+        }
+        // 2) 备用路径：TrollStore 安装时 App 带 platform-application 权限，
+        //    可以访问沙盒外的公共目录，两个进程写同一处即可互通。
+        let fallback = URL(fileURLWithPath: trollStoreFallbackPath, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+            let probe = fallback.appendingPathComponent(".write-probe")
+            try Data("ok".utf8).write(to: probe)
+            try? FileManager.default.removeItem(at: probe)
+            return fallback
+        } catch {
+            return nil
+        }
     }
 
     public static var preferences: UserDefaults? {
@@ -18,12 +37,21 @@ public enum AppGroup {
         containerURL != nil
     }
 
+    /// 是否走了 TrollStore 的公共目录备用通道
+    public static var isUsingFallback: Bool {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) == nil
+            && containerURL != nil
+    }
+
     /// 给界面看的简短诊断信息
     public static var diagnosisText: String {
-        guard let url = containerURL else {
-            return "共享存储不可用（App Group 未生效）"
+        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) {
+            return "共享存储正常 · App Group（\(groupURL.lastPathComponent)）"
         }
-        return "共享存储正常 · \(url.lastPathComponent)"
+        if containerURL != nil {
+            return "共享存储正常 · 公共目录（TrollStore 模式）"
+        }
+        return "共享存储不可用（既没有 App Group 权限，也无法写入公共目录）"
     }
 
     public static var segmentsURL: URL? {
