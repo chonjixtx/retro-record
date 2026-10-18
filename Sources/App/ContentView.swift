@@ -72,21 +72,17 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(model.isRecording ? "录制中 · 环形缓冲持续滚动" : (model.wasInterrupted ? "录制被中断（多半是锁屏了）" : "未在录制"))
                         .font(.headline)
-                    Text("已缓存 \(model.cachedDurationText) · 占用 \(model.cachedSizeText)")
+                    Text(AppGroup.isShared
+                         ? "已缓存 \(model.cachedDurationText) · 占用 \(model.cachedSizeText)"
+                         : "降级模式：分片写在录制扩展自己的沙盒里，点保存后直接进相册")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    // 诊断行：共享存储拿不到时，录制扩展写的东西主 App 读不到，
-                    // 表现为"系统在录但永远是 0 秒"。
+                        .fixedSize(horizontal: false, vertical: true)
+                    // 存储模式说明：共享模式灰色，降级模式橙色提示
                     Text(AppGroup.diagnosisText)
                         .font(.caption)
-                        .foregroundColor(AppGroup.isAvailable ? Color.secondary : Color.red)
-                    if !AppGroup.isAvailable {
-                        // 不可用时把每条候选路径的成败全列出来，便于定位到底卡在哪
-                        Text(AppGroup.diagnosisDetail)
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                        .foregroundColor(AppGroup.isShared ? Color.secondary : Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                     if model.wasInterrupted {
                         Button("知道了，重新起录") {
                             model.markInterruptedHandled()
@@ -118,7 +114,8 @@ struct ContentView: View {
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .disabled(model.isExporting || model.cachedSeconds < 1)
+                // 降级模式下主 App 读不到分片，缓存秒数恒为 0，此时不能据此禁用按钮
+                .disabled(model.isExporting || (AppGroup.isShared && model.cachedSeconds < 1))
 
                 if let progress = model.exportProgress {
                     Text(progress)
@@ -251,6 +248,9 @@ struct ContentView: View {
                 Label("你必须知道的三件事", systemImage: "info.circle")
                     .font(.headline)
                 NoteRow(text: "录制时状态栏会常驻系统录制指示器，这是 iOS 强制的，无法隐藏。")
+                if !AppGroup.isShared {
+                    NoteRow(text: "当前是降级模式：视频保存后出现在「照片」App，不会出现在下方「已保存」列表里。")
+                }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
                 NoteRow(text: "悬浮球只在本 App 前台可见。切到别的 App 后要点返回本 App 才能保存。")
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")

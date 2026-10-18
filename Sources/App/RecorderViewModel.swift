@@ -43,6 +43,9 @@ final class RecorderViewModel: ObservableObject {
         microphoneEnabled = config.microphoneEnabled
         refresh()
         startPolling()
+
+        // 扩展进程没有 UI，自己弹不出权限框，必须由主 App 先把相册权限要下来
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
     }
 
     deinit {
@@ -100,6 +103,13 @@ final class RecorderViewModel: ObservableObject {
 
     func saveRetro() {
         guard !isExporting else { return }
+
+        // 降级模式：主 App 读不到分片，只能通知录制扩展自己导出到相册
+        if !AppGroup.isShared {
+            requestExportFromExtension()
+            return
+        }
+
         guard cachedSeconds >= 1 else {
             notice = Notice(text: "缓存里还没有画面，先开始录制并保持屏幕不锁屏", isError: true)
             return
@@ -131,6 +141,33 @@ final class RecorderViewModel: ObservableObject {
 
     func open(_ url: URL) {
         showingShareURL = url
+    }
+
+    /// 降级模式下的保存：通过系统级 Darwin 通知让录制扩展自己拼接，
+    /// 秒数编码在通知名里（Darwin 通知传不了 payload）。
+    private func requestExportFromExtension() {
+        let seconds = Int(retentionSeconds)
+        isExporting = true
+        exportProgress = "已通知录制扩展导出，请稍候…"
+
+        let name = "com.retro.recorder.save.\(seconds)"
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(name as CFString),
+            nil,
+            nil,
+            true
+        )
+
+        Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            isExporting = false
+            exportProgress = nil
+            notice = Notice(
+                text: "已请求导出最近 \(seconds) 秒。\n受安装方式限制，视频会直接存进「照片」App，App 内列表读不到。\n如果相册里没有，请到 设置 → 回溯 → 照片 里允许「添加照片」。",
+                isError: false
+            )
+        }
     }
 
     func clearCache() {
