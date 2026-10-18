@@ -1,0 +1,72 @@
+name: RetroRecord
+options:
+  bundleIdPrefix: com.retro
+  deploymentTarget:
+    iOS: "15.4"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_BITCODE: NO
+    GENERATE_INFOPLIST_FILE: NO
+    ALWAYS_SEARCH_USER_PATHS: NO
+    CLANG_ENABLE_MODULES: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+    # 签名参数不写死：Xcode 里手动选 Team 即可真机调试，
+    # 命令行打未签名 ipa 时由 xcodebuild 参数覆盖（见 workflow）
+
+schemes:
+  RetroRecord:
+    build:
+      targets:
+        RetroRecord: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
+targets:
+  RetroRecord:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Shared
+      # XcodeGen 没有顶层 resources 键，资源必须写进 sources，它按扩展名自动归到 Resources 构建阶段
+      - path: Resources/Assets.xcassets
+    dependencies:
+      - target: RecorderExtension
+      - sdk: ReplayKit.framework
+    # 说明：iOS 15 兼容版移除了灵动岛/锁屏实时活动组件（ActivityKit 要求 iOS 16.1+，
+    # 且内嵌 appex 的 MinimumOSVersion 高于设备系统会导致整包装不上）。
+    # 若将来只为 iOS 16.1+ 发布，把 Sources/Widget 加回 target 即可。
+    # 注意：不要用 XcodeGen 的 info:/entitlements: 字段——它会用空模板重新生成并
+    # 覆盖手写的 plist（NSExtension、App Group 全会丢）。统一用下面的 build setting 指定。
+    settings:
+      base:
+        PRODUCT_NAME: RetroRecord
+        PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: Resources/App-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/App.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  RecorderExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/RecorderExtension
+      - path: Sources/Shared
+    dependencies:
+      - sdk: ReplayKit.framework
+    settings:
+      base:
+        PRODUCT_NAME: RecorderExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder.broadcast
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: Resources/RecorderExtension-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/RecorderExtension.entitlements

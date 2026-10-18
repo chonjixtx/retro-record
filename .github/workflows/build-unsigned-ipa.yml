@@ -1,0 +1,56 @@
+name: build-unsigned-ipa
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    name: 编译未签名 IPA
+    runs-on: macos-15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate --spec project.yml
+
+      - name: 查看 Xcode 版本
+        run: xcodebuild -version
+
+      - name: Archive（不签名）
+        run: |
+          xcodebuild \
+            -project RetroRecord.xcodeproj \
+            -scheme RetroRecord \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/RetroRecord.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: 打包成 IPA
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/RetroRecord.xcarchive/Products/Applications/RetroRecord.app build/ipa/Payload/
+          cd build/ipa
+          zip -qry ../RetroRecord-unsigned.ipa Payload
+          cd ..
+          ls -lh RetroRecord-unsigned.ipa
+          unzip -l RetroRecord-unsigned.ipa | grep -E "PlugIns|\.app" | head -20
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetroRecord-unsigned-ipa
+          path: build/RetroRecord-unsigned.ipa
+          retention-days: 30
