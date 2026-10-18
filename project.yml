@@ -2,7 +2,10 @@ name: RetroRecord
 options:
   bundleIdPrefix: com.retro
   deploymentTarget:
-    iOS: "15.4"
+    # 15.0：覆盖 iOS/iPadOS 15~最新，iPhone 与 iPad 通用。
+    # 不要上调：Broadcast 录制、App Group、AVAssetExport 都在 15.0 上可用，
+    # 而 ActivityKit（灵动岛）要求 16.1+，已整体移除。
+    iOS: "15.0"
   generateEmptyDirectories: true
 
 settings:
