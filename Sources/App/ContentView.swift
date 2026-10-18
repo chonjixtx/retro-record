@@ -76,10 +76,17 @@ struct ContentView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     // 诊断行：共享存储拿不到时，录制扩展写的东西主 App 读不到，
-                    // 表现为"系统在录但永远是 0 秒"。这条能直接判定是不是签名权限问题。
+                    // 表现为"系统在录但永远是 0 秒"。
                     Text(AppGroup.diagnosisText)
                         .font(.caption)
                         .foregroundColor(AppGroup.isAvailable ? Color.secondary : Color.red)
+                    if !AppGroup.isAvailable {
+                        // 不可用时把每条候选路径的成败全列出来，便于定位到底卡在哪
+                        Text(AppGroup.diagnosisDetail)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if model.wasInterrupted {
                         Button("知道了，重新起录") {
                             model.markInterruptedHandled()

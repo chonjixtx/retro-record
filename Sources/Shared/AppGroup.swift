@@ -3,27 +3,54 @@ import Foundation
 public enum AppGroup {
     public static let identifier = AppIdentifiers.appGroup
 
-    /// TrollStore / 越狱环境下，主 App 与扩展都能读写的公共目录。
-    /// 正常证书签名时这个路径写不进去（沙盒会拒绝），会自动回落到 App Group。
-    private static let trollStoreFallbackPath = "/var/mobile/Library/RetroRecorder"
+    /// 备用公共目录候选。TrollStore / 越狱环境下 App 带 platform-application，
+    /// 可以写沙盒外的固定路径，主 App 与扩展写同一处即可互通。
+    /// 普通证书签名时这些路径都会被沙盒拒绝，自动回落。
+    private static let fallbackCandidates = [
+        "/var/mobile/Library/RetroRecorder",
+        "/var/mobile/Documents/RetroRecorder",
+        "/var/mobile/Media/RetroRecorder",
+        "/var/mobile/RetroRecorder",
+    ]
+
+    /// 解析结果缓存：refresh 每 2 秒跑一次，不能每次都去建目录和写探针文件
+    private static var cachedContainerURL: URL?
+    private static var resolved = false
+    private static var log: [String] = []
+
+    private static func groupContainerURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
+    }
 
     public static var containerURL: URL? {
-        // 1) 标准路径：App Group（需要付费证书 + 描述文件含该 group）
-        if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) {
+        if resolved { return cachedContainerURL }
+        resolved = true
+        log.removeAll()
+
+        if let url = groupContainerURL() {
+            log.append("App Group 正常：\(url.path)")
+            cachedContainerURL = url
             return url
         }
-        // 2) 备用路径：TrollStore 安装时 App 带 platform-application 权限，
-        //    可以访问沙盒外的公共目录，两个进程写同一处即可互通。
-        let fallback = URL(fileURLWithPath: trollStoreFallbackPath, isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
-            let probe = fallback.appendingPathComponent(".write-probe")
-            try Data("ok".utf8).write(to: probe)
-            try? FileManager.default.removeItem(at: probe)
-            return fallback
-        } catch {
-            return nil
+        log.append("App Group 不可用")
+        log.append("HOME：\(NSHomeDirectory())")
+
+        for path in fallbackCandidates {
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                let probe = url.appendingPathComponent(".write-probe")
+                try Data("ok".utf8).write(to: probe)
+                try? FileManager.default.removeItem(at: probe)
+                log.append("可写：\(path)")
+                cachedContainerURL = url
+                return url
+            } catch {
+                log.append("拒绝：\(path)")
+            }
         }
+        cachedContainerURL = nil
+        return nil
     }
 
     public static var preferences: UserDefaults? {
@@ -37,21 +64,27 @@ public enum AppGroup {
         containerURL != nil
     }
 
-    /// 是否走了 TrollStore 的公共目录备用通道
+    /// 是否走了公共目录备用通道
     public static var isUsingFallback: Bool {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) == nil
-            && containerURL != nil
+        groupContainerURL() == nil && containerURL != nil
     }
 
     /// 给界面看的简短诊断信息
     public static var diagnosisText: String {
-        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) {
-            return "共享存储正常 · App Group（\(groupURL.lastPathComponent)）"
-        }
-        if containerURL != nil {
+        _ = containerURL
+        if isUsingFallback {
             return "共享存储正常 · 公共目录（TrollStore 模式）"
         }
-        return "共享存储不可用（既没有 App Group 权限，也无法写入公共目录）"
+        if isAvailable {
+            return "共享存储正常 · App Group"
+        }
+        return "共享存储不可用（无 App Group，公共目录也写不进）"
+    }
+
+    /// 详细诊断：把每条候选路径的成败都列出来，用于定位到底卡在哪
+    public static var diagnosisDetail: String {
+        _ = containerURL
+        return log.joined(separator: "\n")
     }
 
     public static var segmentsURL: URL? {
