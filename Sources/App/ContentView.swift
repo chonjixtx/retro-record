@@ -75,6 +75,11 @@ struct ContentView: View {
                     Text("已缓存 \(model.cachedDurationText) · 占用 \(model.cachedSizeText)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    // 诊断行：共享存储拿不到时，录制扩展写的东西主 App 读不到，
+                    // 表现为"系统在录但永远是 0 秒"。这条能直接判定是不是签名权限问题。
+                    Text(AppGroup.diagnosisText)
+                        .font(.caption)
+                        .foregroundColor(AppGroup.isAvailable ? Color.secondary : Color.red)
                     if model.wasInterrupted {
                         Button("知道了，重新起录") {
                             model.markInterruptedHandled()

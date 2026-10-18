@@ -24,6 +24,21 @@ final class SampleHandler: RPBroadcastSampleHandler {
     // MARK: - 生命周期
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
+        // 共享容器拿不到就直接报错退出。
+        // 否则会变成"系统显示在录、主 App 永远 0 秒"的静默失败，用户根本没法定位。
+        guard AppGroup.isAvailable else {
+            let error = NSError(
+                domain: "RetroRecorder",
+                code: -100,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "无法访问共享存储（App Group 未生效）。\n请用支持 App Group 的证书重新签名，或在签名工具里保留 application-groups 权限。"
+                ]
+            )
+            finishBroadcastWithError(error)
+            return
+        }
+
         config = RecorderConfigStore.load().clamped
         _ = AppGroup.segmentsURL
         SegmentStore.prune(retentionSeconds: config.retentionSeconds)
