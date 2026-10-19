@@ -211,7 +211,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
 
                 // 全局悬浮窗状态：就绪 = 巨魔商店安装且权限保留，退到桌面球依然在
-                if RetroEnv.backgroundOverlayAvailable {
+                if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: FloatingBallController.shared.overlayReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundColor(FloatingBallController.shared.overlayReady ? .green : .orange)
@@ -298,8 +298,10 @@ struct ContentView: View {
 
                 Toggle("录进麦克风声音", isOn: $model.microphoneEnabled)
                 Toggle("App 内悬浮球", isOn: $model.floatingBallEnabled)
-                // 后台悬浮球需要 TrollStore 的 platform-application 权限，全能签变体没有，直接隐藏
-                if RetroEnv.backgroundOverlayAvailable {
+                // 后台悬浮球（私有 FrontBoard Scene 全局方案）默认关闭：
+                // 该方案在 iPad 2020 / iOS 15.4.1 上会冻结设备（拦截实体 Home 键），
+                // 故先隐藏开关，悬浮球回退为 App 内可靠小窗。后续验证兼容实现后再开放。
+                if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
                     Toggle("后台悬浮球（实验）", isOn: $backgroundOverlay)
                         .onChange(of: backgroundOverlay) { _ in
                             // 让 FloatingBallController.show() 按新开关决定保活启停
@@ -360,8 +362,11 @@ struct ContentView: View {
                     NoteRow(text: "保底办法：下拉控制中心点红色按钮停止录制，最近一段会自动存进相册。")
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
-                if RetroEnv.backgroundOverlayAvailable {
+                if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
                     NoteRow(text: "「后台悬浮球」开启后，切到别的 App、回桌面、锁屏，球依然在屏幕最上层，点它即可在后台保存（需巨魔商店安装）。诊断区显示「未就绪」说明当前安装方式拿不到该权限，球只会在 App 内显示。代价：球会出现在录出来的画面里，后台保活略增耗电。关掉此开关则恢复为仅 App 内显示。")
+                }
+                if RetroEnv.backgroundOverlayAvailable && !RetroEnv.globalOverlayEnabled {
+                    NoteRow(text: "「跨 App / 桌面的全局悬浮球」因会冻结你的机型（iPad 2020 / iOS 15.4.1 实体 Home 键被私有 Scene 拦截），本次已默认关闭。回溯请用 App 内的「保存最近 N 秒」按钮，或在设置里打开「App 内悬浮球」后于 App 前台时点球。后续验证出兼容实现会重新开放。")
                 }
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
