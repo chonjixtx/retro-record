@@ -1,15 +1,14 @@
 import UIKit
+import UserNotifications
 
 /// 主 App 代理（通过 UIApplicationDelegateAdaptor 挂到 SwiftUI 生命周期上，不影响主 Scene 管理）。
 ///
-/// 三件事：
-/// 1. 启动时创建全局悬浮窗的「锚定 Scene」（仅 TrollStore 环境有意义）；
-/// 2. 锚定 Scene 的会话交给 EmptySceneDelegate——**绝不在 Scene 里建窗口**。
-///    原项目（nongshifu/SysView）的关键架构：浮动 Scene 只是一个空锚，把自己撑成
-///    系统级全屏前台存在；真正显示的悬浮窗口建在 App 进程的「无 Scene 空间」里。
-///    若把窗口建进 Scene，Scene 内窗口空白处的触摸不会跨 Scene 下传，整屏卡死。
-/// 3. Scene 就绪回调里让 FloatingBallController 建无 Scene 的独立悬浮窗。
-final class RetroAppDelegate: NSObject, UIApplicationDelegate {
+/// 职责：
+/// 1. 启动时初始化「通知栏一键保存」的通知代理与分类；
+/// 2. 全局悬浮球开关自愈：冷启动时若上次开关是 ON，复位为 OFF（本次不会自动重建私有 Scene，
+///    避免「开关显示开、桌面却没球」的错位状态；也避免一开屏就冻结/闪退）；
+/// 3. 锚定 Scene 的空代理配置（仅用户手动打开全局球开关后才会用到）。
+final class RetroAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     /// 与 OverlayBridge 里的 kOverlaySceneIdentifier 保持一致
     static let overlaySceneIdentifier = "retrooverlay"
 
@@ -17,10 +16,45 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // 全局悬浮球（私有 FrontBoard Scene）在部分机型/iOS 会冻结设备（拦截上滑回桌面手势）。
-        // 因此**不在启动时创建**——改由用户在「设置 → 后台悬浮球（实验·高风险）」开关里
-        // 主动打开时才建（见 ContentView 的 toggle.onChange）。默认关闭 → 开屏即安全。
+        // 通知栏一键保存：注册分类 + 请求权限 + 接管动作回调
+        SaveNotification.registerCategory()
+        SaveNotification.requestAuthorization()
+        UNUserNotificationCenter.current().delegate = self
+
+        // 全局悬浮球（私有 FrontBoard Scene）不在启动时创建——它在部分机型/iOS 会冻结或闪退。
+        // 冷启动说明上次的进程已经没了，私有 Scene 不可能还在；把开关复位为 OFF，
+        // 避免「开关是开着的、但桌面没有球」的错位状态。
+        if UserDefaults.standard.bool(forKey: "retro.bg.overlay") {
+            UserDefaults.standard.set(false, forKey: "retro.bg.overlay")
+            UserDefaults.standard.set(true, forKey: "retro.bg.overlay.wasOn")
+        }
         return true
+    }
+
+    // MARK: - 通知栏「保存最近片段」被点击
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if response.actionIdentifier == SaveNotification.actionID {
+            SaveTrigger.shared.fire()
+        }
+        completionHandler()
+    }
+
+    /// App 在前台时也把通知横幅显示出来（录制时通常已在后台，此条为兜底）
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        if #available(iOS 14.0, *) {
+            completionHandler([.banner, .sound])
+        } else {
+            completionHandler([.alert, .sound])
+        }
     }
 
     func application(
