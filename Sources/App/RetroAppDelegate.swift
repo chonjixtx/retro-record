@@ -38,7 +38,9 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if response.actionIdentifier == SaveNotification.actionID {
+        // 长按菜单里的「保存最近片段」，或直接轻点通知本体（会打开 App）都触发保存
+        if response.actionIdentifier == SaveNotification.actionID ||
+            response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             SaveTrigger.shared.fire()
         }
         completionHandler()
