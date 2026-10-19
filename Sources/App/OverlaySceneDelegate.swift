@@ -26,13 +26,11 @@ final class OverlaySceneDelegate: UIResponder, UISceneDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
 
-        let ball = FloatingBallView(
-            onTap: { FloatingBallController.shared.onTap?() },
-            onLongPress: { FloatingBallController.shared.onLongPress?() }
-        )
-        let hosting = UIHostingController(rootView: ball)
-        hosting.view.backgroundColor = .clear
-        window.rootViewController = hosting
+        // 根视图只做容器：整屏透明、不收触摸；球由 FloatingBallController 作为
+        // 一颗 68x68 的可交互子视图挂上来（见 PassthroughWindow 的 hitTest 注释）。
+        let container = UIViewController()
+        container.view.backgroundColor = .clear
+        window.rootViewController = container
         // 先藏起来，等 FloatingBallController.show() 再放出来
         window.isHidden = true
         self.window = window
