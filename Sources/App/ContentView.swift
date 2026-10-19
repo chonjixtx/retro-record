@@ -4,7 +4,7 @@ import UIKit
 @MainActor
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("retro.bg.overlay") private var backgroundOverlay: Bool = true
+    @AppStorage("retro.bg.overlay") private var backgroundOverlay: Bool = false
     @EnvironmentObject private var model: RecorderViewModel
 
     var body: some View {
@@ -298,13 +298,27 @@ struct ContentView: View {
 
                 Toggle("录进麦克风声音", isOn: $model.microphoneEnabled)
                 Toggle("App 内悬浮球", isOn: $model.floatingBallEnabled)
-                // 后台悬浮球（私有 FrontBoard Scene 全局方案）默认关闭：
-                // 该方案在 iPad 2020 / iOS 15.4.1 上会冻结设备（拦截实体 Home 键），
-                // 故先隐藏开关，悬浮球回退为 App 内可靠小窗。后续验证兼容实现后再开放。
+
+                // 全局悬浮球（私有 FrontBoard Scene 方案）。⚠️ 高风险：在部分机型/iOS
+                // 会让私有前台 Scene 拦截「上滑回桌面」手势 → 整屏冻结，需硬重启脱困。
+                // 因此做成手动开关、默认关闭：只有用户主动打开才建 Scene，开屏即安全。
                 if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
-                    Toggle("后台悬浮球（实验）", isOn: $backgroundOverlay)
-                        .onChange(of: backgroundOverlay) { _ in
-                            // 让 FloatingBallController.show() 按新开关决定保活启停
+                    Toggle("后台悬浮球（实验·高风险）", isOn: $backgroundOverlay)
+                        .onChange(of: backgroundOverlay) { on in
+                            if on {
+                                // 用户主动打开 → 建立全局浮动 Scene + 球
+                                OverlayBridge.setShellReadyHandler {
+                                    DispatchQueue.main.async {
+                                        FloatingBallController.shared.overlayShellReady()
+                                    }
+                                }
+                                OverlayBridge.startOverlayScene()
+                            } else {
+                                // 关闭 → 拆掉 Scene，球收起，避免冻结残留
+                                OverlayBridge.teardown()
+                                FloatingBallController.shared.hide()
+                            }
+                            // 让 FloatingBallController 按新开关决定走全局/App 内
                             syncFloatingBall(enabled: model.floatingBallEnabled)
                         }
                 }
@@ -363,10 +377,7 @@ struct ContentView: View {
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
                 if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
-                    NoteRow(text: "「后台悬浮球」开启后，切到别的 App、回桌面、锁屏，球依然在屏幕最上层，点它即可在后台保存（需巨魔商店安装）。诊断区显示「未就绪」说明当前安装方式拿不到该权限，球只会在 App 内显示。代价：球会出现在录出来的画面里，后台保活略增耗电。关掉此开关则恢复为仅 App 内显示。")
-                }
-                if RetroEnv.backgroundOverlayAvailable && !RetroEnv.globalOverlayEnabled {
-                    NoteRow(text: "「跨 App / 桌面的全局悬浮球」因会冻结你的机型（iPad 2020 / iOS 15.4.1 实体 Home 键被私有 Scene 拦截），本次已默认关闭。回溯请用 App 内的「保存最近 N 秒」按钮，或在设置里打开「App 内悬浮球」后于 App 前台时点球。后续验证出兼容实现会重新开放。")
+                    NoteRow(text: "「后台悬浮球（实验·高风险）」在设置里打开后，球会浮在任意 App / 桌面上方，点它即可后台保存（需巨魔商店安装并保留 platform-application 权限）。⚠️ 该方案用私有 FrontBoard Scene，在你的机型（iPad Pro 11\" 二代 / iOS 15.4.1）上可能整屏冻结：打开即可能出现「退不出、点不动」。若冻结，请强制重启——快速按一下音量+ → 快速按一下音量− → 长按顶部电源键约 10 秒直到出现苹果 logo。重启后默认仍是关，不会一开就冻。代价：球会出现在录出来的画面里，后台保活略增耗电。")
                 }
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
