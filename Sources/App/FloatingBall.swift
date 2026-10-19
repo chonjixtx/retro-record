@@ -4,8 +4,11 @@ import UIKit
 /// 悬浮球：圆形，可拖动，自动吸附左右边缘，点击即保存最近 N 秒。
 ///
 /// 它就是需求里"圆形悬浮窗 + 回溯两个字"的实现。
-/// 需要说明的是：iOS 不允许 App 在其他 App 之上绘制视图，所以这颗球只在**本 App 前台**可见；
-/// 切到别的 App 后，承担"一直能看到"职责的是灵劫岛 / 锁屏常驻胶囊（Live Activity）。
+///
+/// 普通签名：只能在 App 内显示，切到别的 App 就消失（iOS 沙盒限制）。
+/// TrollStore 安装 + platform-application 权限：开启「后台悬浮球」后，这颗球会以
+/// 高层级 UIWindow 压在其他 App / 主屏幕 / 锁屏之上，可点击、可拖动，点一下即在后台保存。
+/// 依赖 KeepAlive 的后台音频保活，防止 App 切后台后被系统挂起。
 @MainActor
 final class FloatingBallController {
     static let shared = FloatingBallController()
@@ -15,7 +18,16 @@ final class FloatingBallController {
 
     var isVisible: Bool { window != nil }
 
+    /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
+    static var overlayInBackground: Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "retro.bg.overlay") == nil { return true }
+        return defaults.bool(forKey: "retro.bg.overlay")
+    }
+
     func show(onTap: @escaping () -> Void, onLongPress: @escaping () -> Void) {
+        // 后台悬浮开着就保活；关了立刻停，不留后台音频
+        if Self.overlayInBackground { KeepAlive.shared.start() } else { KeepAlive.shared.stop() }
         guard window == nil else { return }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
@@ -46,6 +58,7 @@ final class FloatingBallController {
     func hide() {
         window?.isHidden = true
         window = nil
+        KeepAlive.shared.stop()
     }
 }
 
