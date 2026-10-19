@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("retro.bg.overlay") private var backgroundOverlay: Bool = false
     @State private var notifStatus: String = ""
+    @State private var showAnnouncement = false
     @EnvironmentObject private var model: RecorderViewModel
 
     var body: some View {
@@ -36,6 +37,10 @@ struct ContentView: View {
                 ShareSheet(url: url)
             }
         }
+        // 启动公告：24 小时内点过「已阅读+一天内不弹」则跳过
+        .sheet(isPresented: $showAnnouncement) {
+            AnnouncementView { showAnnouncement = false }
+        }
         .onChange(of: scenePhase) { phase in
             handleScenePhase(phase)
         }
@@ -46,6 +51,12 @@ struct ContentView: View {
             syncFloatingBall(enabled: model.floatingBallEnabled)
             // 扩展进程没有 UI，弹不了权限框，只能由主 App 代请求
             model.requestPhotoAuth()
+
+            // 启动公告：过了 24 小时静默期（或从未勾选）就弹
+            let hideUntil = UserDefaults.standard.double(forKey: "retro.announce.hideUntil")
+            if Date().timeIntervalSince1970 >= hideUntil {
+                showAnnouncement = true
+            }
 
             // 通知栏一键保存：把动作回调接到 saveRetro
             let vm = model
