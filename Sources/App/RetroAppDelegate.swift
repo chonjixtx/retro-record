@@ -17,17 +17,9 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // 全能签变体没有 platform-application 权限，全局悬浮窗不可用，不启动。
-        // 另外全局 Scene 方案在部分机型/iOS 会冻结设备（拦截实体 Home 键），
-        // 由 RetroEnv.globalOverlayEnabled 总开关控制，默认关闭 → 不创建私有 Scene。
-        if RetroEnv.backgroundOverlayAvailable, RetroEnv.globalOverlayEnabled {
-            OverlayBridge.setShellReadyHandler {
-                DispatchQueue.main.async {
-                    FloatingBallController.shared.overlayShellReady()
-                }
-            }
-            OverlayBridge.startOverlayScene()
-        }
+        // 全局悬浮球（私有 FrontBoard Scene）在部分机型/iOS 会冻结设备（拦截上滑回桌面手势）。
+        // 因此**不在启动时创建**——改由用户在「设置 → 后台悬浮球（实验·高风险）」开关里
+        // 主动打开时才建（见 ContentView 的 toggle.onChange）。默认关闭 → 开屏即安全。
         return true
     }
 
