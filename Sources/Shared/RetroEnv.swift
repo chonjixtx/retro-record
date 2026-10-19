@@ -32,6 +32,13 @@ public enum RetroEnv {
         !noAppGroup
     }
 
+    /// 是否启用「跨 App / 桌面」的全局悬浮球（私有 FrontBoard Scene 方案）。
+    ///
+    /// ⚠️ 该方案在 iPad 2020 / iOS 15.4.1（Home 键机型）上会让私有前台 Scene
+    /// 拦截实体 Home 键，导致「退不出 App / 录屏点不动」反复冻结。
+    /// 因此默认关闭，悬浮球回退为 App 内可靠小窗。后续若验证出兼容的实现再打开。
+    public static let globalOverlayEnabled: Bool = false
+
     /// 变体标识（给界面显示），让用户能确认自己装的是哪一个包
     public static var variantLabel: String {
         noAppGroup ? "全能签版（无 App Group）" : "标准版"
