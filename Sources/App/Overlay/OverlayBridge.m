@@ -171,14 +171,15 @@ static FBSystemShellInitializeFn ResolveFBSystemShellInitialize(void) {
     sOrientationObserver = nil;
     sOverlayWindow = nil;
 
-    // 真正把浮动 Scene 从系统移除，避免关闭后冻结残留
+    // 真正把浮动 Scene 从系统移除，避免关闭后冻结残留。
+    // 用 performSelector + NSSelectorFromString 绕过编译期检查：FBSceneManager 的头文件里
+    // 并没有声明 removeScene:，直接发消息会在编译期报「no visible @interface」错误。
     @try {
         if (sFloatingScene && NSClassFromString(@"FBSceneManager")) {
             FBSceneManager *manager = [FBSceneManager sharedInstance];
-            if ([manager respondsToSelector:@selector(removeScene:)]) {
-                [manager removeScene:sFloatingScene];
-            } else if ([manager respondsToSelector:@selector(destroyScene:)]) {
-                [manager performSelector:@selector(destroyScene:) withObject:sFloatingScene];
+            SEL sel = NSSelectorFromString(@"removeScene:");
+            if (manager && [manager respondsToSelector:sel]) {
+                [manager performSelector:sel withObject:sFloatingScene];
             }
         }
     } @catch (NSException *exception) {
