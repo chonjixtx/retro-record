@@ -15,9 +15,12 @@ enum SaveNotification {
 
     /// 注册通知分类（带「保存」按钮）
     static func registerCategory() {
+        // .foreground：点击后把 App 拉到前台执行保存。
+        // 实测在后台（通知栏直接触发、App 未在前台）导出会失败——AVFoundation 在后台
+        // 加载轨道/导出不可靠（-11800 / 轨道加载为空）。前台执行最稳，且能直接看到结果。
         let action = UNNotificationAction(identifier: actionID,
                                           title: "保存最近片段",
-                                          options: [])
+                                          options: [.foreground])
         let category = UNNotificationCategory(identifier: categoryID,
                                               actions: [action],
                                               intentIdentifiers: [],
