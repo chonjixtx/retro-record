@@ -13,7 +13,11 @@ struct Notice: Identifiable {
 @MainActor
 final class RecorderViewModel: ObservableObject {
     @Published var retentionSeconds: Double = 600 {
-        didSet { persist() }
+        didSet {
+            persist()
+            // 降级模式下扩展读不到主 App 的配置文件，保留秒数得单独同步过去
+            NotifyBridge.postConfig(retentionSeconds: Int(retentionSeconds))
+        }
     }
     @Published var bitrateMbps: Double = 6 {
         didSet { persist() }
@@ -34,6 +38,9 @@ final class RecorderViewModel: ObservableObject {
     @Published var savedFiles: [URL] = []
     @Published var showingShareURL: URL?
     @Published var extensionLogs: [String] = []
+    /// 系统层面是否正在录屏。`UIScreen.isCaptured` 在主 App 进程内就能读到，
+    /// 不需要跨进程通信 —— 这是判断"到底在不在录"最可靠的一个信号
+    @Published var systemCapturing = false
 
     private var pollTimer: Timer?
 
@@ -111,9 +118,24 @@ final class RecorderViewModel: ObservableObject {
         cachedSeconds = Double(segments.count) * SegmentStore.segmentSeconds
         cachedSizeBytes = SegmentStore.totalSizeBytes()
         extensionLogs = LogSink.shared.snapshot
+        systemCapturing = UIScreen.main.isCaptured
+        // 降级模式没有共享配置文件：用户改秒数时扩展可能还没起录（监听还没挂上），
+        // 所以这里持续补发一次，保证扩展起来后一定能拿到正确的保留时长
+        if !AppGroup.isShared {
+            NotifyBridge.postConfig(retentionSeconds: Int(retentionSeconds))
+        }
         if savedFiles.isEmpty {
             savedFiles = Array(ExportStore.allExports().prefix(20))
         }
+    }
+
+    var captureText: String {
+        systemCapturing ? "系统录制：进行中（状态栏应有红色标记）" : "系统录制：未开启"
+    }
+
+    /// 最近一条扩展日志（去掉主 App 自己写的那部分）
+    var lastExtensionLine: String? {
+        extensionLogs.last { !$0.contains(" APP ") }
     }
 
     /// 扩展是否在产出分片。降级模式下看不了共享目录，只能看日志里有没有 SEG_OK
@@ -141,6 +163,18 @@ final class RecorderViewModel: ObservableObject {
         refresh()
     }
 
+    /// 主动问一下扩展还在不在。App 进程被系统杀掉重启后，之前的日志全丢了，
+    /// 只有靠这个才能立刻拿到当前状态
+    func probeExtension() {
+        LogBridge.local("PING_SENT")
+        NotifyBridge.postPing()
+        refresh()
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            refresh()
+        }
+    }
+
     func persist() {
         let config = RecorderConfig(
             retentionSeconds: retentionSeconds,
@@ -155,6 +189,8 @@ final class RecorderViewModel: ObservableObject {
     func willStartRecording() {
         // 用户在系统弹层里点"开始录制"前，先把配置落盘给扩展
         persist()
+        // 降级模式没共享目录，配置只能走通知通道送过去
+        NotifyBridge.postConfig(retentionSeconds: Int(retentionSeconds))
     }
 
     func markInterruptedHandled() {
@@ -219,17 +255,45 @@ final class RecorderViewModel: ObservableObject {
         LogBridge.local("SAVE_POST_\(seconds)")
         LogBridge.local("AUTH_\(authTag)")
 
+        let baseline = LogSink.shared.snapshot.count
         NotifyBridge.postSave(seconds: seconds)
+        refresh()
 
         Task {
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            // 3 秒内扩展应该回一条 SAVE_REQ，没有就是没收到
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            let fresh = Array(LogSink.shared.snapshot.dropFirst(baseline))
+            let acked = fresh.contains { $0.contains("SAVE_REQ") }
+            refresh()
+
+            if acked {
+                exportProgress = "扩展已接手，正在拼接…"
+                try? await Task.sleep(nanoseconds: 7_000_000_000)
+                isExporting = false
+                exportProgress = nil
+                refresh()
+                let after = Array(LogSink.shared.snapshot.dropFirst(baseline))
+                let photoOK = after.contains { $0.contains("PHOTO_OK") || $0.contains("PARTS_OK") }
+                if photoOK {
+                    notice = Notice(
+                        text: "已保存最近 \(seconds) 秒，去「照片」App 的最近项目里就能看到。",
+                        isError: false
+                    )
+                } else {
+                    notice = Notice(
+                        text: "扩展已收到请求，但还没确认写入相册。\n看下面「诊断」里的日志：出现 PHOTO_FAIL 就是相册权限问题。",
+                        isError: true
+                    )
+                }
+                return
+            }
+
             isExporting = false
             exportProgress = nil
-            refresh()
-            notice = Notice(
-                text: "已请求导出最近 \(seconds) 秒。\n视频会直接写进「照片」App。\n下方「诊断」里有扩展回传的日志，能看到到底存没存成功。",
-                isError: false
-            )
+            let hint = systemCapturing
+                ? "录制是开着的，但录制扩展没有回应保存请求。\n改用保底办法：下拉控制中心 → 点红色录制按钮停止 → 视频会自动存进相册。"
+                : "现在没有在录屏。\n先点「开始录制」→ 选「回溯录制」→ 开始直播，等 30 秒后再点保存。"
+            notice = Notice(text: hint, isError: true)
         }
     }
 

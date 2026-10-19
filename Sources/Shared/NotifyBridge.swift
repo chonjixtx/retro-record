@@ -12,6 +12,11 @@ import Foundation
 public enum NotifyBridge {
     public static let savePrefix = "com.retro.recorder.save."
     public static let logPrefix = "com.retro.recorder.log."
+    /// 降级模式下扩展读不到主 App 写的配置文件，保留秒数只能靠这条通道同步过去
+    public static let configPrefix = "com.retro.recorder.cfg."
+    /// 主 App 主动探活：扩展收到就回一串状态。带时间戳后缀，
+    /// 避免 notifyd 把连续两次同名通知合并成一次
+    public static let pingPrefix = "com.retro.recorder.ping."
 
     // MARK: - 发送
 
@@ -28,6 +33,17 @@ public enum NotifyBridge {
     /// 主 App 通知扩展：把最近 seconds 秒导出到相册
     public static func postSave(seconds: Int) {
         post(name: savePrefix + String(max(seconds, 5)))
+    }
+
+    /// 主 App 通知扩展：用户把保留时长改成了 seconds 秒（扩展据此滚动删除旧分片）
+    public static func postConfig(retentionSeconds: Int) {
+        post(name: configPrefix + String(max(retentionSeconds, 10)))
+    }
+
+    /// 主 App 探活：扩展如果还活着，会回 PONG + 分片数 + 相册权限
+    public static func postPing() {
+        let stamp = Int(Date().timeIntervalSince1970) % 100_000
+        post(name: pingPrefix + String(stamp))
     }
 
     /// 任意一侧广播一条日志。字符会被规整成通知名能接受的形态
@@ -67,6 +83,18 @@ public enum NotifyBridge {
     public static func observeSave(_ handler: @escaping (Double) -> Void) -> Observation {
         observe(prefix: savePrefix) { text in
             handler(Double(text) ?? 600)
+        }
+    }
+
+    public static func observeConfig(_ handler: @escaping (Double) -> Void) -> Observation {
+        observe(prefix: configPrefix) { text in
+            handler(Double(text) ?? 600)
+        }
+    }
+
+    public static func observePing(_ handler: @escaping () -> Void) -> Observation {
+        observe(prefix: pingPrefix) { _ in
+            handler()
         }
     }
 

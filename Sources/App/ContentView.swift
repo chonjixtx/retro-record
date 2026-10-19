@@ -65,15 +65,23 @@ struct ContentView: View {
 
     // MARK: - 卡片
 
+    /// 降级模式下主 App 读不到扩展的心跳文件，只能靠系统录制状态判断
+    private var headlineText: String {
+        if model.isRecording { return "录制中 · 环形缓冲持续滚动" }
+        if model.systemCapturing { return "系统录屏进行中 · 正在缓冲" }
+        if model.wasInterrupted { return "录制被中断（多半是锁屏了）" }
+        return "未在录制"
+    }
+
     private var statusCard: some View {
         Card {
             HStack(alignment: .top, spacing: 12) {
                 Circle()
-                    .fill(model.isRecording ? Color.red : Color(uiColor: .tertiaryLabel))
+                    .fill((model.isRecording || model.systemCapturing) ? Color.red : Color(uiColor: .tertiaryLabel))
                     .frame(width: 10, height: 10)
                     .padding(.top, 6)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(model.isRecording ? "录制中 · 环形缓冲持续滚动" : (model.wasInterrupted ? "录制被中断（多半是锁屏了）" : "未在录制"))
+                    Text(headlineText)
                         .font(.headline)
                     Text(AppGroup.isShared
                          ? "已缓存 \(model.cachedDurationText) · 占用 \(model.cachedSizeText)"
@@ -86,6 +94,14 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundColor(AppGroup.isShared ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                    // 这一行不依赖任何跨进程通信，是"到底在不在录"最可靠的判据
+                    HStack(spacing: 6) {
+                        Image(systemName: model.systemCapturing ? "record.circle.fill" : "record.circle")
+                            .foregroundColor(model.systemCapturing ? .red : .secondary)
+                        Text(model.captureText)
+                            .font(.caption)
+                            .foregroundColor(model.systemCapturing ? .red : .secondary)
+                    }
                     if model.wasInterrupted {
                         Button("知道了，重新起录") {
                             model.markInterruptedHandled()
@@ -175,6 +191,9 @@ struct ContentView: View {
                     Button("请求相册权限") { model.requestPhotoAuth() }
                         .font(.footnote)
                         .buttonStyle(.borderedProminent)
+                    Button("检测扩展") { model.probeExtension() }
+                        .font(.footnote)
+                        .buttonStyle(.bordered)
                     Button("打开系统设置") { model.openSystemSettings() }
                         .font(.footnote)
                         .buttonStyle(.bordered)
@@ -185,9 +204,15 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
+                if let last = model.lastExtensionLine {
+                    Text("扩展最近一条：" + last)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 if !model.extensionLogs.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.extensionLogs, id: \.self) { line in
+                        ForEach(Array(model.extensionLogs.enumerated()), id: \.offset) { _, line in
                             Text(line)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.secondary)
@@ -304,6 +329,7 @@ struct ContentView: View {
                 NoteRow(text: "录制时状态栏会常驻系统录制指示器，这是 iOS 强制的，无法隐藏。")
                 if !AppGroup.isShared {
                     NoteRow(text: "当前是降级模式：视频保存后出现在「照片」App，不会出现在下方「已保存」列表里。")
+                    NoteRow(text: "保底办法：下拉控制中心点红色按钮停止录制，最近一段会自动存进相册。")
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
                 NoteRow(text: "悬浮球只在本 App 前台可见。切到别的 App 后要点返回本 App 才能保存。")
@@ -337,6 +363,7 @@ struct ContentView: View {
         case .active:
             model.refresh()
             model.resyncPhotoAuth()
+            model.probeExtension()
             syncFloatingBall(enabled: model.floatingBallEnabled)
         case .inactive, .background:
             FloatingBallController.shared.hide()
