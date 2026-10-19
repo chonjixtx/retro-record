@@ -2,9 +2,13 @@ import UIKit
 
 /// 主 App 代理（通过 UIApplicationDelegateAdaptor 挂到 SwiftUI 生命周期上，不影响主 Scene 管理）。
 ///
-/// 两件事：
-/// 1. 启动时创建全局悬浮窗的浮动 Scene（仅 TrollStore 环境有意义）；
-/// 2. 拦截浮动 Scene 的连接请求，交给 OverlaySceneDelegate 装悬浮球窗口。
+/// 三件事：
+/// 1. 启动时创建全局悬浮窗的「锚定 Scene」（仅 TrollStore 环境有意义）；
+/// 2. 锚定 Scene 的会话交给 EmptySceneDelegate——**绝不在 Scene 里建窗口**。
+///    原项目（nongshifu/SysView）的关键架构：浮动 Scene 只是一个空锚，把自己撑成
+///    系统级全屏前台存在；真正显示的悬浮窗口建在 App 进程的「无 Scene 空间」里。
+///    若把窗口建进 Scene，Scene 内窗口空白处的触摸不会跨 Scene 下传，整屏卡死。
+/// 3. Scene 就绪回调里让 FloatingBallController 建无 Scene 的独立悬浮窗。
 final class RetroAppDelegate: NSObject, UIApplicationDelegate {
     /// 与 OverlayBridge 里的 kOverlaySceneIdentifier 保持一致
     static let overlaySceneIdentifier = "retrooverlay"
@@ -15,6 +19,11 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         // 全能签变体没有 platform-application 权限，全局悬浮窗不可用，不启动
         if RetroEnv.backgroundOverlayAvailable {
+            OverlayBridge.setShellReadyHandler {
+                DispatchQueue.main.async {
+                    FloatingBallController.shared.overlayShellReady()
+                }
+            }
             OverlayBridge.startOverlayScene()
         }
         return true
@@ -27,11 +36,13 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate {
     ) -> UISceneConfiguration {
         let identifier = sceneSession.persistentIdentifier
 
-        // 浮动 Scene：交给专门的代理装悬浮球
+        // 锚定 Scene：空代理、零窗口。它只负责「存在」，显示由无 Scene 的独立窗口负责。
+        // 不能给 delegateClass = nil：SwiftUI 生命周期下会由 SwiftUI 默认代理接管，
+        // 把主界面塞进这个 Scene。EmptySceneDelegate 不实现 willConnectTo，即零窗口。
         if identifier == Self.overlaySceneIdentifier {
-            let config = UISceneConfiguration(name: "Overlay", sessionRole: sceneSession.role)
+            let config = UISceneConfiguration(name: "OverlayAnchor", sessionRole: sceneSession.role)
             config.sceneClass = UIWindowScene.self
-            config.delegateClass = OverlaySceneDelegate.self
+            config.delegateClass = EmptySceneDelegate.self
             return config
         }
 
@@ -41,7 +52,7 @@ final class RetroAppDelegate: NSObject, UIApplicationDelegate {
             return UISceneConfiguration(name: "Default Configuration", sessionRole: sceneSession.role)
         }
 
-        // 其他来路不明的 Scene：空窗口兜底，绝不渲染内容
+        // 其他来路不明的 Scene：空场景兜底，绝不渲染内容
         let config = UISceneConfiguration(name: "Empty", sessionRole: sceneSession.role)
         config.sceneClass = UIWindowScene.self
         config.delegateClass = EmptySceneDelegate.self
