@@ -12,37 +12,39 @@ import UIKit
 /// 2. App 内窗口（普通签名 / 全能签 / 浮动 Scene 未就绪时）：只能在 App 前台显示，
 ///    切到别的 App 就消失（iOS 沙盒限制）。
 ///
-/// 全局悬浮靠 KeepAlive 的后台音频保活，防止 App 切后台后被系统挂起。
+/// 关键设计：整屏窗口的根视图是一个「不收触摸」的普通 UIViewController，
+/// 悬浮球只是挂上去的一颗 68×68 的可交互子视图。这样空白区域 hitTest 自然落到 nil，
+/// 下层界面（含回桌面手势）照常接收，只有球本身拦截点击——绝不会整屏挡死。
 @MainActor
 final class FloatingBallController {
     static let shared = FloatingBallController()
     private init() {}
 
+    private let ballSize: CGFloat = 68
+
+    /// 全局悬浮窗（形态 1）：整屏透明窗口（不收触摸），球作为独立可交互子视图挂上去
+    private var overlayWindow: PassthroughWindow?
+    private var overlayBallHost: UIHostingController<BallOnlyView>?
     /// App 内窗口（形态 2）
     private var inAppWindow: PassthroughWindow?
-    /// 全局悬浮窗口（形态 1），由 OverlaySceneDelegate 建好後交过来
-    private var overlayWindow: PassthroughWindow?
-    /// 场景还没就绪时先记着，等场景激活再补挂
+    private var inAppBallHost: UIHostingController<BallOnlyView>?
+
     private var pendingShow = false
-    /// 当前是否处于「显示悬浮球」状态
     private var enabled = false
 
-    /// 点击 / 长按回调，由 ContentView 注入；全局窗口早于 ContentView 建好，
-    /// 所以球里存的是「取最新回调」的闭包
+    /// 点击 / 长按回调，由 ContentView 注入
     var onTap: (() -> Void)?
     var onLongPress: (() -> Void)?
 
     var isVisible: Bool {
-        (overlayWindow?.isHidden == false) || (inAppWindow?.isHidden == false)
+        !(overlayBallHost?.view.isHidden ?? true) || !(inAppBallHost?.view.isHidden ?? true)
     }
 
     /// 全局悬浮窗是否就绪（浮动 Scene 已连接并建好窗口）。
-    /// false = 当前装的是普通签名包，球只会在 App 内显示。
     var overlayReady: Bool { overlayWindow != nil }
 
     /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
-    /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false，
-    /// 连后台音频保活都不会启动。
+    /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false。
     static var overlayInBackground: Bool {
         guard RetroEnv.backgroundOverlayAvailable else { return false }
         let defaults = UserDefaults.standard
@@ -50,51 +52,79 @@ final class FloatingBallController {
         return defaults.bool(forKey: "retro.bg.overlay")
     }
 
+    // MARK: - 球的位置（屏幕坐标，左上角，持久化）
+
+    private func defaultPosition() -> CGPoint {
+        let s = UIScreen.main.bounds.size
+        return CGPoint(x: s.width - ballSize - 12, y: s.height * 0.58)
+    }
+
+    private func currentPosition() -> CGPoint {
+        let def = defaultPosition()
+        let x = storedX >= 0 ? min(storedX, UIScreen.main.bounds.width - ballSize - 8) : def.x
+        let y = storedY >= 0 ? min(max(storedY, 56), UIScreen.main.bounds.height - ballSize - 24) : def.y
+        return CGPoint(x: x, y: y)
+    }
+
+    private var storedX: Double { UserDefaults.standard.double(forKey: "retro.ball.x") }
+    private var storedY: Double { UserDefaults.standard.double(forKey: "retro.ball.y") }
+
+    private func clamp(_ p: CGPoint) -> CGPoint {
+        let b = UIScreen.main.bounds
+        let x = min(max(8, p.x), b.width - ballSize - 8)
+        let y = min(max(56, p.y), b.height - ballSize - 24)
+        return CGPoint(x: x, y: y)
+    }
+
+    private func persist(_ p: CGPoint) {
+        UserDefaults.standard.set(Double(p.x), forKey: "retro.ball.x")
+        UserDefaults.standard.set(Double(p.y), forKey: "retro.ball.y")
+    }
+
+    // MARK: - 显隐
+
     func show(onTap: @escaping () -> Void, onLongPress: @escaping () -> Void) {
         self.onTap = onTap
         self.onLongPress = onLongPress
         enabled = true
 
-        // 后台悬浮开着就保活；关了立刻停，不留后台音频
         if Self.overlayInBackground { KeepAlive.shared.start() } else { KeepAlive.shared.stop() }
 
-        // 后台悬浮开着 + 全局窗口就绪：只显示它（它本来就盖在 App 界面之上），不再建 App 内窗口
-        if Self.overlayInBackground, let overlay = overlayWindow {
-            overlay.isHidden = false
+        // 后台悬浮开着 + 全局窗口就绪：只显示它（本来就盖在 App 界面之上），不再建 App 内窗口
+        if Self.overlayInBackground, let window = overlayWindow {
+            ensureOverlayBall(in: window)
+            overlayWindow?.isHidden = false
+            overlayBallHost?.view.isHidden = false
             inAppWindow?.isHidden = true
-            inAppWindow = nil
+            inAppBallHost?.view.isHidden = true
             return
         }
         // 后台悬浮关着：确保全局窗口不挡在前台，走 App 内窗口
         overlayWindow?.isHidden = true
-        // 已有 App 内窗口：直接放出来
-        if let existing = inAppWindow {
-            existing.isHidden = false
-            return
-        }
-        // 建 App 内窗口
+        overlayBallHost?.view.isHidden = true
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive })
-        else {
+            .first(where: { $0.activationState == .foregroundActive }) else {
             pendingShow = true
             return
         }
-        inAppWindow = makeBallWindow(scene: scene)
+        ensureInAppBall(in: scene)
+        inAppWindow?.isHidden = false
+        inAppBallHost?.view.isHidden = false
         pendingShow = false
     }
 
     func hide() {
         enabled = false
-        overlayWindow?.isHidden = true
+        overlayBallHost?.view.isHidden = true
+        inAppBallHost?.view.isHidden = true
         inAppWindow?.isHidden = true
-        inAppWindow = nil
         KeepAlive.shared.stop()
     }
 
-    /// 场景激活后补挂（App 冷启动 / 从后台回前台时 windowScene 才就绪）
+    /// 场景激活后补挂（冷启动 / 从后台回前台时 windowScene 才就绪）
     func retryIfNeeded() {
-        guard pendingShow, enabled, overlayWindow == nil, inAppWindow == nil else { return }
+        guard pendingShow, enabled, overlayWindow == nil else { return }
         pendingShow = false
         if let onTap, let onLongPress {
             show(onTap: onTap, onLongPress: onLongPress)
@@ -106,74 +136,122 @@ final class FloatingBallController {
     /// 浮动 Scene 连上了，窗口已建好（默认隐藏）
     func overlaySceneConnected(_ window: PassthroughWindow) {
         overlayWindow = window
-        // 只有「后台悬浮球」开关也开着时才立刻显示，否则等用户在设置里打开
-        if enabled && Self.overlayInBackground { window.isHidden = false }
+        // 根视图设为不收触摸；球稍后作为可交互子视图挂上去（见 PassthroughWindow 注释）
+        if let vc = window.rootViewController {
+            vc.view.backgroundColor = .clear
+            vc.view.isUserInteractionEnabled = true
+        }
+        if enabled, Self.overlayInBackground {
+            ensureOverlayBall(in: window)
+            overlayWindow?.isHidden = false
+            overlayBallHost?.view.isHidden = false
+        }
     }
 
     /// 浮动 Scene 断开（极少见）：回退到 App 内窗口
     func overlaySceneDisconnected() {
         overlayWindow = nil
+        overlayBallHost = nil
         if enabled, let onTap, let onLongPress {
             show(onTap: onTap, onLongPress: onLongPress)
         }
     }
 
-    // MARK: - 建窗
+    // MARK: - 建窗与建球
 
-    private func makeBallWindow(scene: UIWindowScene) -> PassthroughWindow {
-        let window = PassthroughWindow(windowScene: scene)
-        window.windowLevel = .statusBar + 1
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        let hosting = UIHostingController(rootView: FloatingBallView(
+    private func makeBallHost() -> UIHostingController<BallOnlyView> {
+        let hc = UIHostingController(rootView: BallOnlyView(
             onTap: { [weak self] in self?.onTap?() },
-            onLongPress: { [weak self] in self?.onLongPress?() }
+            onLongPress: { [weak self] in self?.onLongPress?() },
+            onDragChanged: { [weak self] t in self?.dragChanged(translation: t) },
+            onDragEnded: { [weak self] in self?.dragEnded() }
         ))
-        hosting.view.backgroundColor = .clear
-        window.rootViewController = hosting
-        window.isHidden = false
-        return window
+        hc.view.backgroundColor = .clear
+        hc.view.isUserInteractionEnabled = true
+        hc.view.frame = CGRect(origin: currentPosition(),
+                               size: CGSize(width: ballSize, height: ballSize))
+        return hc
+    }
+
+    private func ensureOverlayBall(in window: PassthroughWindow) {
+        guard overlayBallHost == nil, let vc = window.rootViewController else { return }
+        let hc = makeBallHost()
+        vc.addChild(hc)
+        vc.view.addSubview(hc.view)
+        hc.didMove(toParent: vc)
+        overlayBallHost = hc
+    }
+
+    private func ensureInAppBall(in scene: UIWindowScene) {
+        if inAppWindow == nil {
+            let w = PassthroughWindow(windowScene: scene)
+            w.windowLevel = .statusBar + 1
+            w.backgroundColor = .clear
+            w.isOpaque = false
+            let vc = UIViewController()
+            vc.view.backgroundColor = .clear
+            w.rootViewController = vc
+            w.isHidden = false
+            inAppWindow = w
+        }
+        guard let w = inAppWindow, let vc = w.rootViewController else { return }
+        if inAppBallHost == nil {
+            let hc = makeBallHost()
+            vc.addChild(hc)
+            vc.view.addSubview(hc.view)
+            hc.didMove(toParent: vc)
+            inAppBallHost = hc
+        }
+    }
+
+    // MARK: - 拖拽
+
+    private var dragStart: CGPoint?
+
+    private func dragChanged(translation: CGSize) {
+        if dragStart == nil { dragStart = currentPosition() }
+        let base = dragStart!
+        let newP = clamp(CGPoint(x: base.x + translation.width, y: base.y + translation.height))
+        overlayBallHost?.view.frame.origin = newP
+        inAppBallHost?.view.frame.origin = newP
+    }
+
+    private func dragEnded() {
+        defer { dragStart = nil }
+        guard let cur = overlayBallHost?.view.frame.origin ?? inAppBallHost?.view.frame.origin else { return }
+        let b = UIScreen.main.bounds
+        // 离哪边近吸哪边
+        let snappedX = (cur.x <= b.width - ballSize - cur.x) ? 8 : (b.width - ballSize - 8)
+        let snapped = clamp(CGPoint(x: snappedX, y: cur.y))
+        overlayBallHost?.view.frame.origin = snapped
+        inAppBallHost?.view.frame.origin = snapped
+        persist(snapped)
     }
 }
 
-/// 穿透窗口：点到球的空白区域就放行给下面的界面，只有球本身吃掉点击
+/// 穿透窗口：整屏不收触摸，只有作为子视图挂上去的「球」是可交互的。
+///
+/// 因为根视图是普通 UIViewController.view，super.hitTest 在空白区域命中根视图本身，
+/// 这里把它转成 nil 放行给下层；命中球子视图则正常返回。这样不会挡住 App 内按钮，
+/// 也不会拦住系统回桌面手势。
 final class PassthroughWindow: UIWindow {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let hit = super.hitTest(point, with: event) else { return nil }
-        return hit === rootViewController?.view ? nil : hit
+        let hit = super.hitTest(point, with: event)
+        if hit === rootViewController?.view { return nil }
+        return hit
     }
 }
 
-struct FloatingBallView: View {
-    private let ballSize: CGFloat = 68
-
-    @State private var position: CGPoint?
-    @State private var dragStart: CGPoint?
-    @State private var isDragging = false
-    @AppStorage("retro.ball.x") private var storedX: Double = -1
-    @AppStorage("retro.ball.y") private var storedY: Double = -1
-
+/// 只画一颗球（68×68），由控制器把它作为独立可交互子视图挂到窗口上。
+struct BallOnlyView: View {
     let onTap: () -> Void
     let onLongPress: () -> Void
+    let onDragChanged: (CGSize) -> Void
+    let onDragEnded: () -> Void
+
+    private let ballSize: CGFloat = 68
 
     var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            ZStack(alignment: .topLeading) {
-                ballView
-                    .frame(width: ballSize, height: ballSize)
-                    .offset(x: currentPosition(in: size).x, y: currentPosition(in: size).y)
-                    .gesture(dragGesture(in: size))
-                    .onTapGesture(perform: onTap)
-                    .onLongPressGesture(minimumDuration: 0.6, perform: onLongPress)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isDragging)
-            }
-            .onAppear { restore(in: size) }
-        }
-        .ignoresSafeArea()
-    }
-
-    private var ballView: some View {
         ZStack {
             Circle()
                 .fill(Color(red: 0.07, green: 0.07, blue: 0.09).opacity(0.82))
@@ -190,57 +268,12 @@ struct FloatingBallView: View {
         }
         .clipShape(Circle())
         .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 3)
-        .scaleEffect(isDragging ? 1.08 : 1.0)
-    }
-
-    private func currentPosition(in size: CGSize) -> CGPoint {
-        // 横竖屏切换后窗口尺寸变了，旧坐标可能跑出屏幕，这里每次都夹回可视区域
-        let base = position ?? Self.defaultPosition(in: size, ballSize: ballSize)
-        let maxX = max(8, size.width - ballSize - 8)
-        let maxY = max(56, size.height - ballSize - 24)
-        return CGPoint(
-            x: min(max(8, base.x), maxX),
-            y: min(max(56, base.y), maxY)
-        )
-    }
-
-    private static func defaultPosition(in size: CGSize, ballSize: CGFloat) -> CGPoint {
-        CGPoint(x: size.width - ballSize - 12, y: size.height * 0.58)
-    }
-
-    private func restore(in size: CGSize) {
-        guard position == nil else { return }
-        if storedX >= 0, storedY >= 0 {
-            position = CGPoint(
-                x: min(storedX, size.width - ballSize - 8),
-                y: min(storedY, size.height - ballSize - 24)
-            )
-        } else {
-            position = Self.defaultPosition(in: size, ballSize: ballSize)
-        }
-    }
-
-    private func dragGesture(in size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 3)
-            .onChanged { value in
-                if dragStart == nil { dragStart = currentPosition(in: size) }
-                let base = dragStart ?? currentPosition(in: size)
-                var x = base.x + value.translation.width
-                var y = base.y + value.translation.height
-                x = min(max(8, x), size.width - ballSize - 8)
-                y = min(max(56, y), size.height - ballSize - 24)
-                position = CGPoint(x: x, y: y)
-                isDragging = true
-            }
-            .onEnded { _ in
-                isDragging = false
-                dragStart = nil
-                let left = currentPosition(in: size).x
-                let right = size.width - ballSize - currentPosition(in: size).x
-                let snappedX = left <= right ? 8 : size.width - ballSize - 8
-                position = CGPoint(x: snappedX, y: currentPosition(in: size).y)
-                storedX = Double(position?.x ?? -1)
-                storedY = Double(position?.y ?? -1)
-            }
+        .frame(width: ballSize, height: ballSize)
+        .contentShape(Circle())
+        .onTapGesture(perform: onTap)
+        .onLongPressGesture(minimumDuration: 0.6, perform: onLongPress)
+        .gesture(DragGesture(minimumDistance: 3)
+            .onChanged { onDragChanged($0.translation) }
+            .onEnded { _ in onDragEnded() })
     }
 }
