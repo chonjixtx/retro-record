@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @MainActor
 struct ContentView: View {
@@ -53,6 +54,17 @@ struct ContentView: View {
             // 录制已在跑就直接挂上常驻通知（例如从后台被重新唤起）
             if model.systemCapturing {
                 SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+            }
+            // 通知权限被拒绝过 → 明确提示，否则录制时通知中心什么都看不到
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                if settings.authorizationStatus == .denied {
+                    DispatchQueue.main.async {
+                        vm.notice = Notice(
+                            text: "通知权限被拒绝，通知栏保存用不了。\n请到 iPad「设置 → 通知 → 回溯」打开「允许通知」，再重新开始录制。",
+                            isError: true
+                        )
+                    }
+                }
             }
 
             // 上次打开「后台悬浮球」后异常退出（冻结/闪退）→ 明确提示并引导改用通知保存
@@ -441,10 +453,21 @@ struct ContentView: View {
             model.probeExtension()
             syncFloatingBall(enabled: model.floatingBallEnabled)
             FloatingBallController.shared.retryIfNeeded()
+            // 回前台时若在录，确保常驻通知在（内容可能因保留时长变化而需要刷新）
+            if model.systemCapturing {
+                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+            }
         case .inactive, .background:
             // 后台悬浮球开着就保持显示（TrollStore 全局悬浮），否则按普通行为收起
             if !FloatingBallController.overlayInBackground {
                 FloatingBallController.shared.hide()
+            }
+            // 关键加固：开始录制后若很快切走（不到 2 秒轮询间隔），App 可能来不及
+            // 检测到录屏就已挂起 → 通知从未发出。退后台这一刻是最后的机会，必发。
+            if model.systemCapturing {
+                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+            } else {
+                SaveNotification.cancel()
             }
         @unknown default:
             break
