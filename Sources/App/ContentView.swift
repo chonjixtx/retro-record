@@ -44,8 +44,35 @@ struct ContentView: View {
             syncFloatingBall(enabled: model.floatingBallEnabled)
             // 扩展进程没有 UI，弹不了权限框，只能由主 App 代请求
             model.requestPhotoAuth()
+
+            // 通知栏一键保存：把动作回调接到 saveRetro
+            let vm = model
+            SaveTrigger.shared.onSave = { [weak vm] in vm?.saveRetro() }
+            SaveNotification.registerCategory()
+            SaveNotification.requestAuthorization()
+            // 录制已在跑就直接挂上常驻通知（例如从后台被重新唤起）
+            if model.systemCapturing {
+                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+            }
+
+            // 上次打开「后台悬浮球」后异常退出（冻结/闪退）→ 明确提示并引导改用通知保存
+            if UserDefaults.standard.bool(forKey: "retro.bg.overlay.wasOn") {
+                UserDefaults.standard.set(false, forKey: "retro.bg.overlay.wasOn")
+                model.notice = Notice(
+                    text: "上次打开「后台悬浮球」后 App 异常退出——该私有方案在你的设备（iPad Pro 11\" 二代 / iOS 15.4.1）上会冻结或闪退，已自动关闭。请改用通知栏保存：录制时下拉通知中心，点「保存最近片段」即可。",
+                    isError: true
+                )
+            }
         }
         .onChange(of: model.exportQuality) { _ in model.persist() }
+        .onChange(of: model.systemCapturing) { capturing in
+            // 录屏一开始就挂上常驻通知，停止就撤掉
+            if capturing {
+                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+            } else {
+                SaveNotification.cancel()
+            }
+        }
         .onOpenURL { url in
             if url.host == "save" || url.absoluteString.contains("save") {
                 model.refresh()
@@ -376,8 +403,10 @@ struct ContentView: View {
                     NoteRow(text: "保底办法：下拉控制中心点红色按钮停止录制，最近一段会自动存进相册。")
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
+                // 主推：通知栏一键保存（不依赖私有 API，绝不冻结/闪退）
+                NoteRow(text: "【推荐】录制时下拉通知中心，点「保存最近片段」即可在任意界面（别的 App、桌面、锁屏）一键保存最近 N 秒，不用切回 App，也不会冻结或闪退。若通知没出现：去「设置 → 通知 → 回溯」允许通知。")
                 if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
-                    NoteRow(text: "「后台悬浮球（实验·高风险）」在设置里打开后，球会浮在任意 App / 桌面上方，点它即可后台保存（需巨魔商店安装并保留 platform-application 权限）。⚠️ 该方案用私有 FrontBoard Scene，在你的机型（iPad Pro 11\" 二代 / iOS 15.4.1）上可能整屏冻结：打开即可能出现「退不出、点不动」。若冻结，请强制重启——快速按一下音量+ → 快速按一下音量− → 长按顶部电源键约 10 秒直到出现苹果 logo。重启后默认仍是关，不会一开就冻。代价：球会出现在录出来的画面里，后台保活略增耗电。")
+                    NoteRow(text: "「后台悬浮球（实验·高风险）」用私有 FrontBoard Scene，在你的机型（iPad Pro 11\" 二代 / iOS 15.4.1）上实测会整屏冻结或直接闪退，**不建议打开**。开关每次启动会自动复位为关，避免卡在异常状态。若误开导致冻结，强制重启：快速按一下音量+ → 快速按一下音量− → 长按顶部电源键约 10 秒。")
                 }
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
