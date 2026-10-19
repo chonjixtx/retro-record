@@ -115,56 +115,75 @@ enum SegmentMerger {
         plan.reverse()
         guard !plan.isEmpty else { throw MergerError.noSegments }
 
-        let composition = AVMutableComposition()
-        guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            throw MergerError.cannotBuildComposition
+        // 预取每个分片的音视频轨。关键修复：分片在静音时段可能没有音频轨，
+        // 若 composition 的音频轨出现「空洞」（有轨但时长对不上），
+        // AVAssetExportSession 会报 AVFoundationErrorDomain -11800。
+        // 因此：所有分片都有音频轨才建音频轨，否则导出无声视频。
+        struct Planned {
+            let range: CMTimeRange
+            let video: AVAssetTrack
+            let audio: AVAssetTrack?
+            let transform: CGAffineTransform
         }
-        let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-
-        var cursor = CMTime.zero
-        var preferredTransform: CGAffineTransform?
-        var insertedCount = 0
+        var planned: [Planned] = []
+        var allHaveAudio = true
         for (item, range) in plan {
-            let videoSources = await AssetCompat.videoTracks(of: item.asset)
-            guard let source = videoSources.first else { continue }
-
-            // 轨道实际时长可能比 asset duration 短一点，超范围插入会抛错，先裁剪
-            let insertRange = range.intersection(source.timeRange) ?? range
-            do {
-                try videoTrack.insertTimeRange(insertRange, of: source, at: cursor)
-                insertedCount += 1
-            } catch {
-                // 某一片损坏就跳过它，不要让整次保存失败
-                continue
-            }
-            if preferredTransform == nil {
-                preferredTransform = await AssetCompat.preferredTransform(of: source)
-            }
-            if let audioTrack {
-                let audioSources = await AssetCompat.audioTracks(of: item.asset)
-                if let audioSource = audioSources.first {
-                    let audioRange = insertRange.intersection(audioSource.timeRange) ?? insertRange
-                    try? audioTrack.insertTimeRange(audioRange, of: audioSource, at: cursor)
-                }
-            }
-            cursor = cursor + insertRange.duration
+            let videos = await AssetCompat.videoTracks(of: item.asset)
+            guard let video = videos.first else { continue }
+            let audios = await AssetCompat.audioTracks(of: item.asset)
+            if audios.first == nil { allHaveAudio = false }
+            let transform = await AssetCompat.preferredTransform(of: video)
+            let insertRange = range.intersection(video.timeRange) ?? range
+            planned.append(Planned(range: insertRange, video: video, audio: audios.first, transform: transform))
         }
-        guard insertedCount > 0 else { throw MergerError.cannotBuildComposition }
-        videoTrack.preferredTransform = preferredTransform ?? .identity
+        guard !planned.isEmpty else { throw MergerError.cannotBuildComposition }
+
+        func buildComposition(withAudio: Bool) throws -> AVMutableComposition {
+            let composition = AVMutableComposition()
+            guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                throw MergerError.cannotBuildComposition
+            }
+            let audioTrack = withAudio
+                ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                : nil
+            var cursor = CMTime.zero
+            var insertedCount = 0
+            for p in planned {
+                do {
+                    try videoTrack.insertTimeRange(p.range, of: p.video, at: cursor)
+                    insertedCount += 1
+                } catch {
+                    // 某一片损坏就跳过它，不要让整次保存失败
+                    continue
+                }
+                if let audioTrack, let audio = p.audio {
+                    let audioRange = p.range.intersection(audio.timeRange) ?? p.range
+                    try? audioTrack.insertTimeRange(audioRange, of: audio, at: cursor)
+                }
+                cursor = cursor + p.range.duration
+            }
+            guard insertedCount > 0 else { throw MergerError.cannotBuildComposition }
+            videoTrack.preferredTransform = planned.first?.transform ?? .identity
+            return composition
+        }
 
         let outputURL = try makeOutputURL()
-        // 首选用户选的画质；失败自动用直通模式（不重编码）再试一次，
-        // 排除画质预设与源不兼容导致的失败
-        do {
-            try await runExport(composition: composition, quality: quality, outputURL: outputURL)
-        } catch {
-            if quality != .native {
-                try await runExport(composition: composition, quality: .native, outputURL: outputURL)
-            } else {
-                throw error
+        // 多级重试：用户画质 → 直通 → 直通+去音频，尽量救回每一次保存
+        var attempts: [(ExportQuality, Bool)] = [(quality, allHaveAudio), (.native, allHaveAudio)]
+        if allHaveAudio { attempts.append((.native, false)) }
+        var lastError: Error?
+        for (q, withAudio) in attempts {
+            do {
+                let composition = try buildComposition(withAudio: withAudio)
+                try await runExport(composition: composition, quality: q, outputURL: outputURL)
+                return try installToExports(from: outputURL)
+            } catch MergerError.cancelled {
+                throw MergerError.cancelled
+            } catch {
+                lastError = error
             }
         }
-        return try installToExports(from: outputURL)
+        throw lastError ?? MergerError.exportFailed(nil)
     }
 
     private static func runExport(
