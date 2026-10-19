@@ -3,10 +3,11 @@
 #import <dlfcn.h>
 #import <dispatch/dispatch.h>
 
-/// 浮动 Scene 的标识。必须同时满足三处一致：
+/// 浮动 Scene 的标识。必须同时满足两处一致：
 ///   1. 本文件的 FBSSceneIdentity identifier
 ///   2. RetroAppDelegate.configurationForConnecting 里的 persistentIdentifier 判断
-///   3. OverlaySceneDelegate 里按 session.persistentIdentifier 装窗口
+/// 注意：这个 Scene 是「空锚」，里面绝不建窗口；悬浮窗口由 FloatingBallController
+/// 在 shellReady 回调后以「不挂 windowScene 的独立 UIWindow」创建。
 static NSString *const kOverlaySceneIdentifier = @"retrooverlay";
 
 static BOOL sStarted = NO;
@@ -15,6 +16,7 @@ static id sFloatingScene = nil;                       // FBScene，必须强引�
 static UIRootWindowScenePresentationBinder *sSceneBinder = nil; // binder 持 scene，也要强引用
 static __weak UIWindow *sOverlayWindow = nil;
 static FBSOrientationObserver *sOrientationObserver = nil;
+static void (^sShellReadyHandler)(void) = nil;        // Scene 建好后回调 Swift
 
 typedef void (*FBSystemShellInitializeFn)(id);
 
@@ -118,6 +120,13 @@ static FBSystemShellInitializeFn ResolveFBSystemShellInitialize(void) {
         sSceneBinder = binder;
         sSceneCreated = YES;
         NSLog(@"[overlay] floating scene created: %@", kOverlaySceneIdentifier);
+
+        // 通知 Swift 侧：锚定 Scene 已就绪，可以建「不挂 windowScene 的独立悬浮窗口」了。
+        // 注意：悬浮窗口绝不能建在这个浮动 Scene 里（Scene 内窗口的空白触摸不会跨 Scene
+        // 下传，会整屏卡死）；原项目的做法是 Scene 只做空锚，窗口建在 App 进程的无 Scene 空间。
+        if (sShellReadyHandler) {
+            dispatch_async(dispatch_get_main_queue(), sShellReadyHandler);
+        }
     } @catch (NSException *exception) {
         NSLog(@"[overlay] createFloatingScene exception: %@", exception);
     }
@@ -143,6 +152,10 @@ static FBSystemShellInitializeFn ResolveFBSystemShellInitialize(void) {
     } @catch (NSException *exception) {
         NSLog(@"[overlay] orientation observer exception: %@", exception);
     }
+}
+
++ (void)setShellReadyHandler:(void (^)(void))handler {
+    sShellReadyHandler = handler;
 }
 
 + (void)attachOverlayWindow:(UIWindow *)window {
