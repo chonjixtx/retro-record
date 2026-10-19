@@ -221,13 +221,15 @@ final class RecorderViewModel: ObservableObject {
         persist()
         // 降级模式没共享目录，配置只能走通知通道送过去
         NotifyBridge.postConfig(retentionSeconds: Int(retentionSeconds))
-        // 此刻 App 一定在前台，是挂常驻通知最可靠的时机（退后台再发可能来不及）
-        SaveNotification.post(retentionSeconds: Int(retentionSeconds))
+        // 此刻 App 一定在前台，是挂常驻通知最可靠的时机。
+        // 延后 3 秒投递：等系统选择器/录制启动后 App 已退后台，通知才会进通知中心列表
+        // （前台 App 自己的通知 iOS 不放进通知中心列表）。
+        SaveNotification.post(retentionSeconds: Int(retentionSeconds), delay: 3)
         // 兜底：若 25 秒内没真正开始录（用户取消了系统选择器），把通知撤掉
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 25_000_000_000)
             guard let self else { return }
-            if !self.systemCapturing { SaveNotification.cancel() }
+            if !self.systemCapturing && !Heartbeat.isRecording() { SaveNotification.cancel() }
         }
     }
 
