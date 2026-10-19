@@ -31,6 +31,7 @@ enum MergerError: LocalizedError {
     case cannotBuildComposition
     case cannotCreateExporter
     case exportFailed(Error?)
+    case installFailed(String)
     case cancelled
 
     var errorDescription: String? {
@@ -41,6 +42,7 @@ enum MergerError: LocalizedError {
         case .cannotBuildComposition: return "无法组装视频轨道：所有分片都无法插入轨道（文件可能损坏），请清空缓冲重录"
         case .cannotCreateExporter: return "无法创建导出器，试试切换导出画质"
         case .exportFailed(let error): return "导出失败：\(error.map { Self.describe($0) } ?? "未知错误")"
+        case .installFailed(let reason): return "视频已拼接成功，但移入保存目录失败：\(reason)"
         case .cancelled: return "导出已取消"
         }
     }
@@ -56,6 +58,7 @@ enum SegmentMerger {
     static func exportLast(seconds: Double, quality: ExportQuality) async throws -> URL {
         let segments = SegmentStore.allSegments()
         guard !segments.isEmpty else { throw MergerError.noSegments }
+        LogBridge.local("EXP_SEG_\(segments.count)_REQ_\(Int(seconds))s")
 
         // 第一步：把要用的分片拷进 App 自己的临时目录。
         // 导出实际由系统进程 mediaserverd 代劳，TrollStore / 自签环境下它对
@@ -89,6 +92,7 @@ enum SegmentMerger {
             items.append(Item(asset: AVURLAsset(url: copy), duration: duration))
         }
         if items.isEmpty {
+            LogBridge.local("EXP_READFAIL_\(readFailures)_OF_\(segments.count)")
             throw MergerError.readFailed(failed: readFailures, total: segments.count)
         }
 
@@ -136,7 +140,11 @@ enum SegmentMerger {
             let insertRange = range.intersection(video.timeRange) ?? range
             planned.append(Planned(range: insertRange, video: video, audio: audios.first, transform: transform))
         }
-        guard !planned.isEmpty else { throw MergerError.cannotBuildComposition }
+        LogBridge.local("EXP_PLAN_\(planned.count)_AUD_\(allHaveAudio ? 1 : 0)")
+        guard !planned.isEmpty else {
+            LogBridge.local("EXP_PLAN_EMPTY")
+            throw MergerError.cannotBuildComposition
+        }
 
         func buildComposition(withAudio: Bool) throws -> AVMutableComposition {
             let composition = AVMutableComposition()
@@ -176,10 +184,13 @@ enum SegmentMerger {
             do {
                 let composition = try buildComposition(withAudio: withAudio)
                 try await runExport(composition: composition, quality: q, outputURL: outputURL)
+                LogBridge.local("EXP_OK_\(q.rawValue)")
                 return try installToExports(from: outputURL)
             } catch MergerError.cancelled {
                 throw MergerError.cancelled
             } catch {
+                let ns = error as NSError
+                LogBridge.local("EXP_TRY_\(q.rawValue)_FAIL_\(ns.domain)_\(ns.code)")
                 lastError = error
             }
         }
@@ -217,7 +228,9 @@ enum SegmentMerger {
 
     /// 导出成功后，由 App 进程（不是 mediaserverd）把成品搬进共享容器的 exports 目录
     private static func installToExports(from tmpURL: URL) throws -> URL {
-        guard let exportsDir = AppGroup.exportsURL else { throw MergerError.cannotBuildComposition }
+        guard let exportsDir = AppGroup.exportsURL else {
+            throw MergerError.installFailed("App Group exports 目录不可用")
+        }
         let dest = exportsDir.appendingPathComponent(tmpURL.lastPathComponent)
         if FileManager.default.fileExists(atPath: dest.path) {
             try? FileManager.default.removeItem(at: dest)
@@ -226,9 +239,15 @@ enum SegmentMerger {
             try FileManager.default.moveItem(at: tmpURL, to: dest)
         } catch {
             // 兜底：移动失败就复制一份过去
-            try FileManager.default.copyItem(at: tmpURL, to: dest)
-            try? FileManager.default.removeItem(at: tmpURL)
+            do {
+                try FileManager.default.copyItem(at: tmpURL, to: dest)
+                try? FileManager.default.removeItem(at: tmpURL)
+            } catch {
+                LogBridge.local("EXP_INSTALL_FAIL \(error.localizedDescription)")
+                throw MergerError.installFailed((error as NSError).localizedDescription)
+            }
         }
+        LogBridge.local("EXP_INSTALLED")
         return dest
     }
 }
