@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: 编译未签名 IPA
+    name: 编译未签名 IPA（标准版 + 全能签版）
     runs-on: macos-15
 
     steps:
@@ -25,7 +25,10 @@ jobs:
       - name: 查看 Xcode 版本
         run: xcodebuild -version
 
-      - name: Archive（不签名）
+      # ---------------------------------------------------------------
+      # 变体一：标准版（TrollStore / 带 App Group 的签名）
+      # ---------------------------------------------------------------
+      - name: Archive（标准版）
         run: |
           xcodebuild \
             -project RetroRecord.xcodeproj \
@@ -38,7 +41,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             archive
 
-      - name: 打包成 IPA
+      - name: 打包标准版 IPA
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/RetroRecord.xcarchive/Products/Applications/RetroRecord.app build/ipa/Payload/
@@ -48,9 +51,45 @@ jobs:
           ls -lh RetroRecord-unsigned.ipa
           unzip -l RetroRecord-unsigned.ipa | grep -E "PlugIns|\.app" | head -20
 
-      - name: 上传产物
+      - name: 上传标准版产物
         uses: actions/upload-artifact@v4
         with:
           name: RetroRecord-unsigned-ipa
           path: build/RetroRecord-unsigned.ipa
+          retention-days: 30
+
+      # ---------------------------------------------------------------
+      # 变体二：全能签版（iOS 17~27、不依赖 App Group）
+      # OTHER_SWIFT_FLAGS 会同时作用于主 App 与录制扩展两个 target，
+      # 两个进程的 RetroEnv.noAppGroup 判定保持一致，全程走降级模式。
+      # ---------------------------------------------------------------
+      - name: Archive（全能签版 · 无 App Group）
+        run: |
+          xcodebuild \
+            -project RetroRecord.xcodeproj \
+            -scheme RetroRecord \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/RetroRecord-noappgroup.xcarchive \
+            OTHER_SWIFT_FLAGS="-D NO_APPGROUP" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: 打包全能签版 IPA
+        run: |
+          mkdir -p build/ipa-noappgroup/Payload
+          cp -R build/RetroRecord-noappgroup.xcarchive/Products/Applications/RetroRecord.app build/ipa-noappgroup/Payload/
+          cd build/ipa-noappgroup
+          zip -qry ../RetroRecord-noappgroup-unsigned.ipa Payload
+          cd ..
+          ls -lh RetroRecord-noappgroup-unsigned.ipa
+          unzip -l RetroRecord-noappgroup-unsigned.ipa | grep -E "PlugIns|\.app" | head -20
+
+      - name: 上传全能签版产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetroRecord-noappgroup-unsigned-ipa
+          path: build/RetroRecord-noappgroup-unsigned.ipa
           retention-days: 30
