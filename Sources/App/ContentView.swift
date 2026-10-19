@@ -4,6 +4,7 @@ import UIKit
 @MainActor
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("retro.bg.overlay") private var backgroundOverlay: Bool = true
     @EnvironmentObject private var model: RecorderViewModel
 
     var body: some View {
@@ -278,6 +279,11 @@ struct ContentView: View {
 
                 Toggle("录进麦克风声音", isOn: $model.microphoneEnabled)
                 Toggle("App 内悬浮球", isOn: $model.floatingBallEnabled)
+                Toggle("后台悬浮球（实验）", isOn: $backgroundOverlay)
+                    .onChange(of: backgroundOverlay) { _ in
+                        // 让 FloatingBallController.show() 按新开关决定保活启停
+                        syncFloatingBall(enabled: model.floatingBallEnabled)
+                    }
 
                 Button(role: .destructive) {
                     model.clearCache()
@@ -332,7 +338,7 @@ struct ContentView: View {
                     NoteRow(text: "保底办法：下拉控制中心点红色按钮停止录制，最近一段会自动存进相册。")
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
-                NoteRow(text: "悬浮球只在本 App 前台可见。切到别的 App 后要点返回本 App 才能保存。")
+                NoteRow(text: "「后台悬浮球」开启后，切到别的 App 球依然在屏幕最上层，点它即可在后台保存；代价是球会出现在录出来的画面里，且后台保活会略增耗电。关掉此开关则恢复为仅 App 内显示。")
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
         }
@@ -366,7 +372,10 @@ struct ContentView: View {
             model.probeExtension()
             syncFloatingBall(enabled: model.floatingBallEnabled)
         case .inactive, .background:
-            FloatingBallController.shared.hide()
+            // 后台悬浮球开着就保持显示（TrollStore 全局悬浮），否则按普通行为收起
+            if !FloatingBallController.overlayInBackground {
+                FloatingBallController.shared.hide()
+            }
         @unknown default:
             break
         }
