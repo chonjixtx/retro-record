@@ -13,6 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 启动浮动 Scene。请在 application:didFinishLaunchingWithOptions: 里调用一次，重复调用无效。
 + (void)startOverlayScene;
 
+/// 浮动 Scene 创建成功后的回调（主线程调用）。Swift 侧在此创建「不挂 windowScene 的独立悬浮窗口」。
++ (void)setShellReadyHandler:(nullable void (^)(void))handler;
+
 /// Swift 侧把浮动 Scene 的窗口交给桥接层（设备旋转时用它同步旋转窗口）。传 nil 表示解绑。
 + (void)attachOverlayWindow:(nullable UIWindow *)window;
 
