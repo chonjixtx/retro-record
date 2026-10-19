@@ -48,8 +48,10 @@ final class FloatingBallController {
 
     /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
     /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false。
+    /// 另外：私有 FrontBoard 全局 Scene 方案在部分机型/iOS 会冻结设备，由
+    /// RetroEnv.globalOverlayEnabled 总开关控制，关闭时一律回退 App 内小窗。
     static var overlayInBackground: Bool {
-        guard RetroEnv.backgroundOverlayAvailable else { return false }
+        guard RetroEnv.backgroundOverlayAvailable, RetroEnv.globalOverlayEnabled else { return false }
         let defaults = UserDefaults.standard
         if defaults.object(forKey: "retro.bg.overlay") == nil { return true }
         return defaults.bool(forKey: "retro.bg.overlay")
@@ -59,7 +61,8 @@ final class FloatingBallController {
 
     private func defaultPosition() -> CGPoint {
         let s = UIScreen.main.bounds.size
-        return CGPoint(x: s.width - ballSize - 12, y: s.height * 0.58)
+        // 默认放到左上角，避开中间「开始录制」等控件；用户可随意拖动
+        return CGPoint(x: 20, y: 120)
     }
 
     private func currentPosition() -> CGPoint {
