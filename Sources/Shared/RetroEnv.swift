@@ -32,8 +32,8 @@ public enum RetroEnv {
         !noAppGroup
     }
 
-    /// 变体标识，写进日志方便排查用户装的是哪一个包
-    public static var variantName: String {
-        noAppGroup ? "no-appgroup" : "standard"
+    /// 变体标识（给界面显示），让用户能确认自己装的是哪一个包
+    public static var variantLabel: String {
+        noAppGroup ? "全能签版（无 App Group）" : "标准版"
     }
 }

@@ -183,6 +183,11 @@ struct ContentView: View {
                     .foregroundColor(AppGroup.isShared ? .secondary : .orange)
                     .fixedSize(horizontal: false, vertical: true)
 
+                // 明确告诉用户装的是哪个变体，避免"我明明要全能签版怎么还有后台悬浮球开关"这类困惑
+                Text("构建变体：\(RetroEnv.variantLabel)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
                 Text("主 App \(model.photoAuthText)")
                     .font(.caption)
                     .foregroundColor(model.photoAuthStatus == .authorized ? .secondary : .orange)
