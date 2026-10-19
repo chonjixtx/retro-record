@@ -1,14 +1,17 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <dlfcn.h>
 #import <dispatch/dispatch.h>
 #import <mach-o/dyld.h>
-#import <sys/ptrace.h>
 #import <sys/sysctl.h>
+#import <sys/types.h>
 #import <unistd.h>
 
+// iOS SDK 不暴露 <sys/ptrace.h>，这里用动态符号查找代替（避免编译期找不到头文件）
 #ifndef PT_DENY_ATTACH
 #define PT_DENY_ATTACH 31
 #endif
+typedef int (*RetroPtraceFn)(int request, pid_t pid, void *addr, int data);
 
 /// 防篡改保护壳。
 ///
@@ -58,7 +61,11 @@
 #pragma mark - 反调试
 
 + (void)denyDebugger {
-    ptrace(PT_DENY_ATTACH, 0, 0, 0);
+    // 动态解析 ptrace：直接声明原型在 iOS 上可用，但用 dlsym 更稳妥，链接期不会依赖
+    RetroPtraceFn fn = (RetroPtraceFn)dlsym(RTLD_DEFAULT, "ptrace");
+    if (fn) {
+        fn(PT_DENY_ATTACH, 0, 0, 0);
+    }
 }
 
 + (BOOL)isBeingDebugged {
