@@ -5,18 +5,40 @@ import UIKit
 ///
 /// 它就是需求里"圆形悬浮窗 + 回溯两个字"的实现。
 ///
-/// 普通签名：只能在 App 内显示，切到别的 App 就消失（iOS 沙盒限制）。
-/// TrollStore 安装 + platform-application 权限：开启「后台悬浮球」后，这颗球会以
-/// 高层级 UIWindow 压在其他 App / 主屏幕 / 锁屏之上，可点击、可拖动，点一下即在后台保存。
-/// 依赖 KeepAlive 的后台音频保活，防止 App 切后台后被系统挂起。
+/// 两种窗口形态：
+/// 1. 全局悬浮窗（TrollStore）：App 通过 FrontBoard 私有 API 创建一个独立浮动 Scene，
+///    它的窗口挂在系统最上层（层级 10000）。切到别的 App、回桌面、锁屏，球依然在，
+///    可点击、可拖动。依赖 TrollStore 安装时保留的 platform-application 等 entitlements。
+/// 2. App 内窗口（普通签名 / 全能签 / 浮动 Scene 未就绪时）：只能在 App 前台显示，
+///    切到别的 App 就消失（iOS 沙盒限制）。
+///
+/// 全局悬浮靠 KeepAlive 的后台音频保活，防止 App 切后台后被系统挂起。
 @MainActor
 final class FloatingBallController {
     static let shared = FloatingBallController()
+    private init() {}
 
-    private var window: PassthroughWindow?
+    /// App 内窗口（形态 2）
+    private var inAppWindow: PassthroughWindow?
+    /// 全局悬浮窗口（形态 1），由 OverlaySceneDelegate 建好後交过来
+    private var overlayWindow: PassthroughWindow?
+    /// 场景还没就绪时先记着，等场景激活再补挂
     private var pendingShow = false
+    /// 当前是否处于「显示悬浮球」状态
+    private var enabled = false
 
-    var isVisible: Bool { window != nil }
+    /// 点击 / 长按回调，由 ContentView 注入；全局窗口早于 ContentView 建好，
+    /// 所以球里存的是「取最新回调」的闭包
+    var onTap: (() -> Void)?
+    var onLongPress: (() -> Void)?
+
+    var isVisible: Bool {
+        (overlayWindow?.isHidden == false) || (inAppWindow?.isHidden == false)
+    }
+
+    /// 全局悬浮窗是否就绪（浮动 Scene 已连接并建好窗口）。
+    /// false = 当前装的是普通签名包，球只会在 App 内显示。
+    var overlayReady: Bool { overlayWindow != nil }
 
     /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
     /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false，
@@ -29,9 +51,28 @@ final class FloatingBallController {
     }
 
     func show(onTap: @escaping () -> Void, onLongPress: @escaping () -> Void) {
+        self.onTap = onTap
+        self.onLongPress = onLongPress
+        enabled = true
+
         // 后台悬浮开着就保活；关了立刻停，不留后台音频
         if Self.overlayInBackground { KeepAlive.shared.start() } else { KeepAlive.shared.stop() }
-        guard window == nil else { return }
+
+        // 后台悬浮开着 + 全局窗口就绪：只显示它（它本来就盖在 App 界面之上），不再建 App 内窗口
+        if Self.overlayInBackground, let overlay = overlayWindow {
+            overlay.isHidden = false
+            inAppWindow?.isHidden = true
+            inAppWindow = nil
+            return
+        }
+        // 后台悬浮关着：确保全局窗口不挡在前台，走 App 内窗口
+        overlayWindow?.isHidden = true
+        // 已有 App 内窗口：直接放出来
+        if let existing = inAppWindow {
+            existing.isHidden = false
+            return
+        }
+        // 建 App 内窗口
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive })
@@ -39,36 +80,66 @@ final class FloatingBallController {
             pendingShow = true
             return
         }
-
-        let window = PassthroughWindow(windowScene: scene)
-        window.windowLevel = .statusBar + 1
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        let hosting = UIHostingController(rootView: FloatingBallView(onTap: onTap, onLongPress: onLongPress))
-        hosting.view.backgroundColor = .clear
-        window.rootViewController = hosting
-        window.isHidden = false
-        self.window = window
-        pendingShow = false
-    }
-
-    /// 场景激活后补挂（App 冷启动时 windowScene 还没准备好）
-    func retryIfNeeded() {
-        guard pendingShow else { return }
+        inAppWindow = makeBallWindow(scene: scene)
         pendingShow = false
     }
 
     func hide() {
-        window?.isHidden = true
-        window = nil
+        enabled = false
+        overlayWindow?.isHidden = true
+        inAppWindow?.isHidden = true
+        inAppWindow = nil
         KeepAlive.shared.stop()
+    }
+
+    /// 场景激活后补挂（App 冷启动 / 从后台回前台时 windowScene 才就绪）
+    func retryIfNeeded() {
+        guard pendingShow, enabled, overlayWindow == nil, inAppWindow == nil else { return }
+        pendingShow = false
+        if let onTap, let onLongPress {
+            show(onTap: onTap, onLongPress: onLongPress)
+        }
+    }
+
+    // MARK: - 全局悬浮窗生命周期（OverlaySceneDelegate 调用）
+
+    /// 浮动 Scene 连上了，窗口已建好（默认隐藏）
+    func overlaySceneConnected(_ window: PassthroughWindow) {
+        overlayWindow = window
+        // 只有「后台悬浮球」开关也开着时才立刻显示，否则等用户在设置里打开
+        if enabled && Self.overlayInBackground { window.isHidden = false }
+    }
+
+    /// 浮动 Scene 断开（极少见）：回退到 App 内窗口
+    func overlaySceneDisconnected() {
+        overlayWindow = nil
+        if enabled, let onTap, let onLongPress {
+            show(onTap: onTap, onLongPress: onLongPress)
+        }
+    }
+
+    // MARK: - 建窗
+
+    private func makeBallWindow(scene: UIWindowScene) -> PassthroughWindow {
+        let window = PassthroughWindow(windowScene: scene)
+        window.windowLevel = .statusBar + 1
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        let hosting = UIHostingController(rootView: FloatingBallView(
+            onTap: { [weak self] in self?.onTap?() },
+            onLongPress: { [weak self] in self?.onLongPress?() }
+        ))
+        hosting.view.backgroundColor = .clear
+        window.rootViewController = hosting
+        window.isHidden = false
+        return window
     }
 }
 
-private final class PassthroughWindow: UIWindow {
+/// 穿透窗口：点到球的空白区域就放行给下面的界面，只有球本身吃掉点击
+final class PassthroughWindow: UIWindow {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard let hit = super.hitTest(point, with: event) else { return nil }
-        // 点到空白区域就放行给下面的页面，只有球本身吃掉点击
         return hit === rootViewController?.view ? nil : hit
     }
 }

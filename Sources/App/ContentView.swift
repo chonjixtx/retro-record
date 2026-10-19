@@ -210,6 +210,20 @@ struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
+                // 全局悬浮窗状态：就绪 = 巨魔商店安装且权限保留，退到桌面球依然在
+                if RetroEnv.backgroundOverlayAvailable {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: FloatingBallController.shared.overlayReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundColor(FloatingBallController.shared.overlayReady ? .green : .orange)
+                        Text(FloatingBallController.shared.overlayReady
+                             ? "后台悬浮球：全局浮动窗口已就绪，退到桌面/锁屏球依然显示可点"
+                             : "后台悬浮球：浮动窗口未就绪（需巨魔商店安装并保留 platform-application 权限），当前仅 App 内显示")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 if let last = model.lastExtensionLine {
                     Text("扩展最近一条：" + last)
                         .font(.caption2)
@@ -347,7 +361,7 @@ struct ContentView: View {
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
                 if RetroEnv.backgroundOverlayAvailable {
-                    NoteRow(text: "「后台悬浮球」开启后，切到别的 App 球依然在屏幕最上层，点它即可在后台保存；代价是球会出现在录出来的画面里，且后台保活会略增耗电。关掉此开关则恢复为仅 App 内显示。")
+                    NoteRow(text: "「后台悬浮球」开启后，切到别的 App、回桌面、锁屏，球依然在屏幕最上层，点它即可在后台保存（需巨魔商店安装）。诊断区显示「未就绪」说明当前安装方式拿不到该权限，球只会在 App 内显示。代价：球会出现在录出来的画面里，后台保活略增耗电。关掉此开关则恢复为仅 App 内显示。")
                 }
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
@@ -381,6 +395,7 @@ struct ContentView: View {
             model.resyncPhotoAuth()
             model.probeExtension()
             syncFloatingBall(enabled: model.floatingBallEnabled)
+            FloatingBallController.shared.retryIfNeeded()
         case .inactive, .background:
             // 后台悬浮球开着就保持显示（TrollStore 全局悬浮），否则按普通行为收起
             if !FloatingBallController.overlayInBackground {

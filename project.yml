@@ -52,10 +52,12 @@ targets:
         PRODUCT_NAME: RetroRecord
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder
         MARKETING_VERSION: 1.3.0
-        CURRENT_PROJECT_VERSION: 4
+        CURRENT_PROJECT_VERSION: 5
         INFOPLIST_FILE: Resources/App-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/App.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # ObjC 桥接（全局悬浮窗 Sources/App/Overlay/*.m 通过它暴露给 Swift）
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/App/Overlay-Bridging.h
 
   RecorderExtension:
     type: app-extension
@@ -70,7 +72,7 @@ targets:
         PRODUCT_NAME: RecorderExtension
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder.broadcast
         MARKETING_VERSION: 1.3.0
-        CURRENT_PROJECT_VERSION: 4
+        CURRENT_PROJECT_VERSION: 5
         INFOPLIST_FILE: Resources/RecorderExtension-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/RecorderExtension.entitlements
 
