@@ -52,7 +52,7 @@ targets:
         PRODUCT_NAME: RetroRecord
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder
         MARKETING_VERSION: 1.3.0
-        CURRENT_PROJECT_VERSION: 5
+        CURRENT_PROJECT_VERSION: 6
         INFOPLIST_FILE: Resources/App-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/App.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -79,7 +79,7 @@ targets:
         PRODUCT_NAME: RecorderExtension
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder.broadcast
         MARKETING_VERSION: 1.3.0
-        CURRENT_PROJECT_VERSION: 5
+        CURRENT_PROJECT_VERSION: 6
         INFOPLIST_FILE: Resources/RecorderExtension-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/RecorderExtension.entitlements
 
