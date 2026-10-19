@@ -34,10 +34,12 @@ public enum RetroEnv {
 
     /// 是否启用「跨 App / 桌面」的全局悬浮球（私有 FrontBoard Scene 方案）。
     ///
-    /// ⚠️ 该方案在 iPad 2020 / iOS 15.4.1（Home 键机型）上会让私有前台 Scene
-    /// 拦截实体 Home 键，导致「退不出 App / 录屏点不动」反复冻结。
-    /// 因此默认关闭，悬浮球回退为 App 内可靠小窗。后续若验证出兼容的实现再打开。
-    public static let globalOverlayEnabled: Bool = false
+    /// ⚠️ 该方案在部分机型/iOS（已确认 iPad Pro 11" 二代 / iOS 15.4.1）上会让私有前台
+    /// Scene 拦截「上滑回桌面」手势，导致整屏冻结、需硬重启脱困。
+    /// 因此把它做成**手动开关、默认关闭**：编译期保留能力（=true），但 App 不在启动时
+    /// 自动创建 Scene，必须由用户在「设置 → 后台悬浮球（实验·高风险）」里主动打开才建。
+    /// 默认关闭 → 安装后开屏即安全；打开后若冻结，硬重启即可，重启后默认仍是关。
+    public static let globalOverlayEnabled: Bool = true
 
     /// 变体标识（给界面显示），让用户能确认自己装的是哪一个包
     public static var variantLabel: String {
