@@ -6,6 +6,7 @@ import UserNotifications
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("retro.bg.overlay") private var backgroundOverlay: Bool = false
+    @State private var notifStatus: String = ""
     @EnvironmentObject private var model: RecorderViewModel
 
     var body: some View {
@@ -51,6 +52,7 @@ struct ContentView: View {
             SaveTrigger.shared.onSave = { [weak vm] in vm?.saveRetro() }
             SaveNotification.registerCategory()
             SaveNotification.requestAuthorization()
+            SaveNotification.statusText { notifStatus = $0 }
             // 录制已在跑就直接挂上常驻通知（例如从后台被重新唤起）
             if model.systemCapturing {
                 SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
@@ -242,17 +244,28 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button("发测试通知") {
+                    Button("发测试通知(5秒后)") {
                         SaveNotification.registerCategory()
-                        SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
-                        model.notice = Notice(text: "已发测试通知。回桌面或切到别的 App，下拉通知中心长按它，看有没有「保存最近片段」。若完全没有通知，说明通知权限被关了：设置 → 通知 → 回溯 → 允许通知。", isError: false)
+                        SaveNotification.post(retentionSeconds: Int(model.retentionSeconds), delay: 5)
+                        SaveNotification.statusText { notifStatus = $0 }
+                        model.notice = Notice(text: "5 秒后发一条测试通知。\n现在立刻按 Home 回桌面（或切到别的 App），等 6 秒再下拉通知中心，长按「回溯录制中」。\n关键：通知不会出现在 App 前台的通知中心里，必须离开 App 才看得到。", isError: false)
                     }
                     .font(.footnote)
                     .buttonStyle(.bordered)
-                    Button("请求通知权限") { SaveNotification.requestAuthorization() }
-                        .font(.footnote)
-                        .buttonStyle(.bordered)
+                    Button("请求通知权限") {
+                        SaveNotification.requestAuthorization()
+                        SaveNotification.statusText { notifStatus = $0 }
+                    }
+                    .font(.footnote)
+                    .buttonStyle(.bordered)
                     Spacer(minLength: 0)
+                }
+
+                if !notifStatus.isEmpty {
+                    Text(notifStatus)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Text(model.extensionAliveText)
@@ -465,8 +478,9 @@ struct ContentView: View {
             FloatingBallController.shared.retryIfNeeded()
             // 回前台时若在录，确保常驻通知在（内容可能因保留时长变化而需要刷新）
             if model.systemCapturing {
-                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds), delay: 2)
             }
+            SaveNotification.statusText { notifStatus = $0 }
         case .inactive, .background:
             // 后台悬浮球开着就保持显示（TrollStore 全局悬浮），否则按普通行为收起
             if !FloatingBallController.overlayInBackground {
