@@ -46,15 +46,14 @@ final class FloatingBallController {
     /// 全局悬浮窗是否就绪（浮动 Scene 已连上、独立窗口已建好）
     var overlayReady: Bool { overlayWindow != nil }
 
-    /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
-    /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false。
-    /// 另外：私有 FrontBoard 全局 Scene 方案在部分机型/iOS 会冻结设备，由
-    /// RetroEnv.globalOverlayEnabled 总开关控制，关闭时一律回退 App 内小窗。
+    /// 后台悬浮球开关（设置页可改，默认**关**）。开 = 走私有 FrontBoard 全局 Scene（跨 App/桌面）；
+    /// 关 = 回退 App 内小窗（不冻结）。
+    /// 全能签变体没有 platform-application 权限，恒返回 false。
+    /// 由 RetroEnv.globalOverlayEnabled 控制「能力是否编译进 App」；本开关控制「是否启用」。
     static var overlayInBackground: Bool {
         guard RetroEnv.backgroundOverlayAvailable, RetroEnv.globalOverlayEnabled else { return false }
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: "retro.bg.overlay") == nil { return true }
-        return defaults.bool(forKey: "retro.bg.overlay")
+        // 未设置时默认 false（安全，不建私有 Scene），必须由用户主动打开开关才启用
+        return UserDefaults.standard.bool(forKey: "retro.bg.overlay")
     }
 
     // MARK: - 球的位置（屏幕坐标，左上角，持久化）
