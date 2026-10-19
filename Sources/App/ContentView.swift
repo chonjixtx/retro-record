@@ -14,6 +14,7 @@ struct ContentView: View {
                     statusCard
                     actionCard
                     startCard
+                    diagnosisCard
                     settingsCard
                     savedCard
                     notesCard
@@ -40,6 +41,8 @@ struct ContentView: View {
         }
         .onAppear {
             syncFloatingBall(enabled: model.floatingBallEnabled)
+            // 扩展进程没有 UI，弹不了权限框，只能由主 App 代请求
+            model.requestPhotoAuth()
         }
         .onChange(of: model.exportQuality) { _ in model.persist() }
         .onOpenURL { url in
@@ -149,6 +152,57 @@ struct ContentView: View {
                 .font(.footnote)
             }
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var diagnosisCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("诊断", systemImage: "stethoscope")
+                    .font(.headline)
+
+                Text(AppGroup.diagnosisText)
+                    .font(.caption)
+                    .foregroundColor(AppGroup.isShared ? .secondary : .orange)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("主 App \(model.photoAuthText)")
+                    .font(.caption)
+                    .foregroundColor(model.photoAuthStatus == .authorized ? .secondary : .orange)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Button("请求相册权限") { model.requestPhotoAuth() }
+                        .font(.footnote)
+                        .buttonStyle(.borderedProminent)
+                    Button("打开系统设置") { model.openSystemSettings() }
+                        .font(.footnote)
+                        .buttonStyle(.bordered)
+                    Spacer(minLength: 0)
+                }
+
+                Text(model.extensionAliveText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if !model.extensionLogs.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.extensionLogs, id: \.self) { line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(uiColor: .tertiarySystemFill))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    Button("清空日志") { model.clearLogs() }
+                        .font(.footnote)
+                }
+            }
         }
     }
 
@@ -282,6 +336,7 @@ struct ContentView: View {
         switch phase {
         case .active:
             model.refresh()
+            model.resyncPhotoAuth()
             syncFloatingBall(enabled: model.floatingBallEnabled)
         case .inactive, .background:
             FloatingBallController.shared.hide()

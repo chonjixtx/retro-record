@@ -26,6 +26,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private let stateLock = NSLock()
     private var pendingSaveSeconds: Double?
 
+    /// 保存请求监听句柄。broadcastFinished 必须注销，
+    /// 否则扩展进程被复用时会回调到已释放的 self（野指针崩溃）
+    private var saveObservation: NotifyBridge.Observation?
+
     // MARK: - 生命周期
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
@@ -36,6 +40,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
         SegmentStore.prune(retentionSeconds: config.retentionSeconds)
         Heartbeat.setActive(true)
         Heartbeat.beat()
+
+        LogBridge.start()
+        NotifyBridge.postLog("EXT_START_\(AppGroup.isShared ? "shared" : "degraded")")
+        NotifyBridge.postLog("DIR_\(AppGroup.containerURL?.lastPathComponent ?? "nil")")
+        NotifyBridge.postLog("AUTH_\(Self.photoAuthTag())")
+        NotifyBridge.postLog("SEGS_\(Self.segmentCount())")
         registerSaveObserver()
     }
 
@@ -50,12 +60,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
     override func broadcastFinished() {
         rotateSegment(force: true)
         Heartbeat.setActive(false)
-        CFNotificationCenterRemoveObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            Unmanaged.passUnretained(self).toOpaque(),
-            nil,
-            nil
-        )
+        if let observation = saveObservation {
+            NotifyBridge.unobserve(observation)
+            saveObservation = nil
+        }
+        NotifyBridge.postLog("EXT_STOP")
+        LogBridge.stop()
     }
 
     // MARK: - 帧处理
@@ -213,11 +223,16 @@ final class SampleHandler: RPBroadcastSampleHandler {
         finishingAppAudio?.markAsFinished()
         finishingMic?.markAsFinished()
 
-        guard finishingWriter.status == .writing else { return }
+        guard finishingWriter.status == .writing else {
+            NotifyBridge.postLog("SEG_BAD_status_\(finishingWriter.status.rawValue)")
+            return
+        }
         finishingWriter.finishWriting { [weak self] in
             guard let self else { return }
             SegmentStore.prune(retentionSeconds: self.config.retentionSeconds)
             Heartbeat.beat()
+            // 降级模式下主 App 读不到分片目录，这条日志是它判断"到底在不在录"的唯一依据
+            NotifyBridge.postLog("SEG_OK_\(Self.segmentCount())")
         }
         if !force { Heartbeat.beat() }
     }
@@ -274,30 +289,20 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     // MARK: - 降级模式：主 App 无法读分片时，由本进程自行导出到相册
 
-    /// Darwin 通知只能传名字，所以把要保留的秒数编码进通知名
-    private static let savePrefix = "com.retro.recorder.save."
-
     private func registerSaveObserver() {
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            Unmanaged.passUnretained(self).toOpaque(),
-            { _, observer, name, _, _ in
-                guard let observer, let name else { return }
-                let text = name.rawValue as String
-                guard text.hasPrefix(SampleHandler.savePrefix) else { return }
-                let seconds = Double(text.replacingOccurrences(of: SampleHandler.savePrefix, with: "")) ?? 600
-                let handler = Unmanaged<SampleHandler>.fromOpaque(observer).takeUnretainedValue()
-                handler.handleSaveRequest(seconds: seconds)
-            },
-            nil,
-            nil,
-            .deliverImmediately
-        )
+        saveObservation = NotifyBridge.observeSave { [weak self] seconds in
+            self?.handleSaveRequest(seconds: seconds)
+        }
     }
 
     private func handleSaveRequest(seconds: Double) {
         // 只有降级模式才由扩展导出；共享模式交给主 App 处理
-        guard !AppGroup.isShared else { return }
+        if AppGroup.isShared {
+            NotifyBridge.postLog("SAVE_IGN_shared")
+            return
+        }
+        NotifyBridge.postLog("SAVE_REQ_\(Int(seconds))")
+        NotifyBridge.postLog("AUTH_\(Self.photoAuthTag())")
 
         // Darwin 回调不一定在录制线程上，这里只置标志，
         // 真正的分片收尾交给录制线程执行，避免并发操作 AVAssetWriter。
@@ -315,12 +320,39 @@ final class SampleHandler: RPBroadcastSampleHandler {
         return value
     }
 
+    // MARK: - 日志辅助
+
+    private static func photoAuthTag() -> String {
+        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+        case .authorized: return "authorized"
+        case .limited: return "limited"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func segmentCount() -> Int {
+        guard let dir = AppGroup.segmentsURL else { return -1 }
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension.lowercased() == "mp4" }.count
+    }
+
+    // MARK: - 导出
+
     private func exportRecent(seconds: Double) {
-        guard let dir = AppGroup.segmentsURL else { return }
+        guard let dir = AppGroup.segmentsURL else {
+            NotifyBridge.postLog("SAVE_FAIL_nodir")
+            return
+        }
         guard let all = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.contentModificationDateKey]
-        ) else { return }
+        ) else {
+            NotifyBridge.postLog("SAVE_FAIL_listdir")
+            return
+        }
 
         let files = all
             .filter { $0.pathExtension.lowercased() == "mp4" }
@@ -329,7 +361,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
                 return l < r
             }
-        guard !files.isEmpty else { return }
+        NotifyBridge.postLog("SEGS_\(files.count)")
+        guard !files.isEmpty else {
+            NotifyBridge.postLog("SAVE_FAIL_noseg")
+            return
+        }
 
         // 从最新往回凑够需要的秒数
         var picked: [URL] = []
@@ -341,13 +377,21 @@ final class SampleHandler: RPBroadcastSampleHandler {
             total += duration
             if total >= seconds { break }
         }
-        guard !picked.isEmpty else { return }
+        NotifyBridge.postLog("PICK_\(picked.count)_of_\(files.count)")
+        guard !picked.isEmpty else {
+            NotifyBridge.postLog("SAVE_FAIL_nopick")
+            return
+        }
 
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(
             withMediaType: .video,
             preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else { return }
+        ) else {
+            NotifyBridge.postLog("SAVE_FAIL_notrack")
+            saveSegmentsDirectly(picked)
+            return
+        }
         let audioTrack = composition.addMutableTrack(
             withMediaType: .audio,
             preferredTrackID: kCMPersistentTrackID_Invalid
@@ -372,7 +416,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
         guard let exporter = AVAssetExportSession(
             asset: composition,
             presetName: AVAssetExportPresetPassthrough
-        ) else { return }
+        ) else {
+            NotifyBridge.postLog("SAVE_FAIL_noexporter")
+            saveSegmentsDirectly(picked)
+            return
+        }
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("retro-\(Int(Date().timeIntervalSince1970)).mp4")
@@ -380,17 +428,62 @@ final class SampleHandler: RPBroadcastSampleHandler {
         exporter.outputURL = outputURL
         exporter.outputFileType = .mp4
         exporter.shouldOptimizeForNetworkUse = false
+        NotifyBridge.postLog("EXPORT_BEGIN")
 
-        exporter.exportAsynchronously {
+        exporter.exportAsynchronously { [weak self] in
+            guard let self else { return }
             guard exporter.status == .completed else {
+                let tag = exporter.error?.localizedDescription ?? "nil"
+                NotifyBridge.postLog("EXPORT_FAIL_\(exporter.status.rawValue)")
+                NotifyBridge.postLog("EXPORT_ERR_\(tag)")
                 try? FileManager.default.removeItem(at: outputURL)
+                // 合成导出失败就直接落单个分片，保证至少有东西进相册
+                self.saveSegmentsDirectly(picked)
                 return
             }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: outputURL)
-            } completionHandler: { _, _ in
+            NotifyBridge.postLog("EXPORT_OK")
+            self.saveToPhotos(url: outputURL) {
                 try? FileManager.default.removeItem(at: outputURL)
             }
+        }
+    }
+
+    private func saveToPhotos(url: URL, cleanup: @escaping () -> Void) {
+        PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+        } completionHandler: { success, error in
+            if success {
+                NotifyBridge.postLog("PHOTO_OK")
+            } else {
+                let code = (error as NSError?)?.code ?? -1
+                NotifyBridge.postLog("PHOTO_FAIL_\(code)")
+            }
+            cleanup()
+        }
+    }
+
+    /// 兜底：把选中的分片逐个塞进相册。每个分片本身就是一个可播放的 mp4，
+    /// 不经过 AVAssetExportSession，成功率最高，代价是相册里会有多段。
+    private func saveSegmentsDirectly(_ urls: [URL]) {
+        let capped = Array(urls.suffix(20))
+        NotifyBridge.postLog("PARTS_BEGIN_\(capped.count)")
+        saveOneSegment(capped, index: 0, done: 0)
+    }
+
+    private func saveOneSegment(_ urls: [URL], index: Int, done: Int) {
+        guard index < urls.count else {
+            NotifyBridge.postLog("PARTS_OK_\(done)_of_\(urls.count)")
+            return
+        }
+        PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: urls[index])
+        } completionHandler: { [weak self] success, error in
+            guard let self else { return }
+            if !success {
+                let code = (error as NSError?)?.code ?? -1
+                NotifyBridge.postLog("PART_FAIL_\(index)_\(code)")
+            }
+            self.saveOneSegment(urls, index: index + 1, done: done + (success ? 1 : 0))
         }
     }
 }

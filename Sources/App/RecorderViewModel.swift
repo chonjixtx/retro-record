@@ -33,6 +33,7 @@ final class RecorderViewModel: ObservableObject {
     @Published var notice: Notice?
     @Published var savedFiles: [URL] = []
     @Published var showingShareURL: URL?
+    @Published var extensionLogs: [String] = []
 
     private var pollTimer: Timer?
 
@@ -41,11 +42,51 @@ final class RecorderViewModel: ObservableObject {
         retentionSeconds = config.retentionSeconds
         bitrateMbps = config.bitrateMbps
         microphoneEnabled = config.microphoneEnabled
+        photoAuthStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        LogBridge.start()
         refresh()
         startPolling()
+    }
 
-        // 扩展进程没有 UI，自己弹不出权限框，必须由主 App 先把相册权限要下来
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+    // MARK: - 相册权限
+
+    @Published var photoAuthStatus: PHAuthorizationStatus = .notDetermined
+
+    var photoAuthText: String {
+        switch photoAuthStatus {
+        case .authorized, .limited: return "相册权限：已允许"
+        case .denied, .restricted: return "相册权限：已拒绝，视频无法存入相册"
+        case .notDetermined: return "相册权限：未请求"
+        @unknown default: return "相册权限：未知"
+        }
+    }
+
+    /// 扩展进程没有 UI，权限必须由主 App 请求
+    func requestPhotoAuth() {
+        let current = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        photoAuthStatus = current
+        if current == .notDetermined {
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+                Task { @MainActor in
+                    self?.photoAuthStatus = status
+                }
+            }
+            return
+        }
+        // 已经拒绝过就没法再弹框了，只能把用户送去设置页
+        if current == .denied || current == .restricted {
+            openSystemSettings()
+        }
+    }
+
+    /// 从设置页切回来时同步一下权限，避免界面还显示旧状态
+    func resyncPhotoAuth() {
+        photoAuthStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+    }
+
+    func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     deinit {
@@ -69,9 +110,35 @@ final class RecorderViewModel: ObservableObject {
         let segments = SegmentStore.allSegments()
         cachedSeconds = Double(segments.count) * SegmentStore.segmentSeconds
         cachedSizeBytes = SegmentStore.totalSizeBytes()
+        extensionLogs = LogSink.shared.snapshot
         if savedFiles.isEmpty {
             savedFiles = Array(ExportStore.allExports().prefix(20))
         }
+    }
+
+    /// 扩展是否在产出分片。降级模式下看不了共享目录，只能看日志里有没有 SEG_OK
+    var extensionAliveText: String {
+        let hits = extensionLogs.filter { $0.contains("SEG_OK") || $0.contains("EXT_START") }
+        if let last = hits.last {
+            return "扩展最近心跳：" + last
+        }
+        return "扩展暂无心跳（没在录，或日志通道未通）"
+    }
+
+    private var authTag: String {
+        switch photoAuthStatus {
+        case .authorized: return "authorized"
+        case .limited: return "limited"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "unknown"
+        }
+    }
+
+    func clearLogs() {
+        LogSink.shared.clear()
+        refresh()
     }
 
     func persist() {
@@ -149,22 +216,18 @@ final class RecorderViewModel: ObservableObject {
         let seconds = Int(retentionSeconds)
         isExporting = true
         exportProgress = "已通知录制扩展导出，请稍候…"
+        LogBridge.local("SAVE_POST_\(seconds)")
+        LogBridge.local("AUTH_\(authTag)")
 
-        let name = "com.retro.recorder.save.\(seconds)"
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName(name as CFString),
-            nil,
-            nil,
-            true
-        )
+        NotifyBridge.postSave(seconds: seconds)
 
         Task {
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
             isExporting = false
             exportProgress = nil
+            refresh()
             notice = Notice(
-                text: "已请求导出最近 \(seconds) 秒。\n受安装方式限制，视频会直接存进「照片」App，App 内列表读不到。\n如果相册里没有，请到 设置 → 回溯 → 照片 里允许「添加照片」。",
+                text: "已请求导出最近 \(seconds) 秒。\n视频会直接写进「照片」App。\n下方「诊断」里有扩展回传的日志，能看到到底存没存成功。",
                 isError: false
             )
         }
