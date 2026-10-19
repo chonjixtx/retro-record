@@ -156,12 +156,14 @@ enum SegmentMerger {
                 : nil
             var cursor = CMTime.zero
             var insertedCount = 0
-            for p in planned {
+            for (idx, p) in planned.enumerated() {
                 do {
                     try videoTrack.insertTimeRange(p.range, of: p.video, at: cursor)
                     insertedCount += 1
                 } catch {
-                    // 某一片损坏就跳过它，不要让整次保存失败
+                    // 逐片记录失败原因：错误域/码 + 请求范围与轨道实际范围，用于远程定位
+                    let ns = error as NSError
+                    LogBridge.local("EXP_INS_FAIL_\(idx)_\(ns.domain)_\(ns.code)_req\(Int(p.range.start.seconds))d\(Int(p.range.duration.seconds))_vt\(Int(p.video.timeRange.duration.seconds))")
                     continue
                 }
                 if let audioTrack, let audio = p.audio {
@@ -170,6 +172,7 @@ enum SegmentMerger {
                 }
                 cursor = cursor + p.range.duration
             }
+            LogBridge.local("EXP_INS_OK_\(insertedCount)_OF_\(planned.count)")
             guard insertedCount > 0 else { throw MergerError.cannotBuildComposition }
             videoTrack.preferredTransform = planned.first?.transform ?? .identity
             return composition
@@ -192,6 +195,33 @@ enum SegmentMerger {
                 let ns = error as NSError
                 LogBridge.local("EXP_TRY_\(q.rawValue)_FAIL_\(ns.domain)_\(ns.code)")
                 lastError = error
+            }
+        }
+        // 保底：拼接导出全部失败时，逐片直通导出到保存目录，至少把画面留住
+        if let exportsDir = AppGroup.exportsURL {
+            LogBridge.local("EXP_FALLBACK_START")
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HHmmss"
+            var savedCount = 0
+            var lastSavedURL: URL?
+            for (idx, item) in items.enumerated() {
+                let out = exportsDir.appendingPathComponent("回溯_分片\(formatter.string(from: Date()))-\(idx).mp4")
+                guard let ex = AVAssetExportSession(asset: item.asset, presetName: AVAssetExportPresetPassthrough) else { continue }
+                ex.outputURL = out
+                ex.outputFileType = .mp4
+                do {
+                    try await ex.runExportToOutputURL()
+                    savedCount += 1
+                    lastSavedURL = out
+                    LogBridge.local("EXP_FALLBACK_OK_\(idx)")
+                } catch {
+                    let ns = error as NSError
+                    LogBridge.local("EXP_FALLBACK_FAIL_\(idx)_\(ns.domain)_\(ns.code)")
+                }
+            }
+            if savedCount > 0, let url = lastSavedURL {
+                LogBridge.local("EXP_FALLBACK_SAVED_\(savedCount)")
+                return url
             }
         }
         throw lastError ?? MergerError.exportFailed(nil)
