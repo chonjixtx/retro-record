@@ -33,7 +33,8 @@ enum SaveNotification {
     static func post(retentionSeconds: Int) {
         let content = UNMutableNotificationContent()
         content.title = "回溯录制中"
-        content.body = "下拉通知中心点「保存最近片段」，即可保存最近 \(retentionSeconds) 秒"
+        // iOS 的通知按钮默认折叠：必须「长按通知」才会显示动作按钮，文案里写明
+        content.body = "在通知中心【长按】这条通知 → 点「保存最近片段」，即可保存最近 \(retentionSeconds) 秒（轻点会打开 App）"
         content.categoryIdentifier = categoryID
         content.sound = nil
         let request = UNNotificationRequest(identifier: requestID, content: content, trigger: nil)
