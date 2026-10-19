@@ -38,7 +38,9 @@ enum SaveNotification {
     }
 
     /// 开始录制 → 发常驻通知（若通知权限被拒，写日志，诊断区可见）
-    static func post(retentionSeconds: Int) {
+    /// - Parameter delay: >0 时用定时触发器延后发送。前台状态下 iOS 不会把本 App 的
+    ///   通知放进通知中心列表，延后几秒可确保 App 已退到后台再投递，必然出现在通知中心。
+    static func post(retentionSeconds: Int, delay: TimeInterval = 0) {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             let status = settings.authorizationStatus
@@ -52,14 +54,41 @@ enum SaveNotification {
             content.body = "在通知中心【长按】这条通知 → 点「保存最近片段」，即可保存最近 \(retentionSeconds) 秒（轻点会打开 App）"
             content.categoryIdentifier = categoryID
             content.sound = nil
-            let request = UNNotificationRequest(identifier: requestID, content: content, trigger: nil)
+            let trigger: UNNotificationTrigger? = delay > 0
+                ? UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false)
+                : nil
+            let request = UNNotificationRequest(identifier: requestID, content: content, trigger: trigger)
             center.add(request) { error in
                 DispatchQueue.main.async {
                     if let error {
                         LogBridge.local("NOTIF_ADD_FAIL \(error.localizedDescription)")
                     } else {
-                        LogBridge.local("NOTIF_ADD_OK")
+                        LogBridge.local(delay > 0 ? "NOTIF_SCHEDULED_\(Int(delay))s" : "NOTIF_ADD_OK")
                     }
+                }
+            }
+        }
+    }
+
+    /// 通知状态自检：授权 / 通知中心开关 / 横幅 / 当前已投递条数，用于诊断为什么看不到
+    static func statusText(_ completion: @escaping (String) -> Void) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { s in
+            let auth: String
+            switch s.authorizationStatus {
+            case .authorized: auth = "已允许"
+            case .denied: auth = "已拒绝"
+            case .provisional: auth = "临时允许"
+            case .ephemeral: auth = "短暂允许"
+            case .notDetermined: auth = "未请求"
+            @unknown default: auth = "未知"
+            }
+            center.getDeliveredNotifications { list in
+                let mine = list.filter { $0.request.identifier == requestID }.count
+                let nc = s.notificationCenterSetting == .enabled ? "开" : "关"
+                let banner = s.alertSetting == .enabled ? "开" : "关"
+                DispatchQueue.main.async {
+                    completion("通知授权：\(auth)｜通知中心：\(nc)｜横幅：\(banner)｜已在通知中心：\(mine) 条")
                 }
             }
         }
