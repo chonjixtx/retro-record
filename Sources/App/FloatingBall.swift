@@ -107,8 +107,14 @@ struct FloatingBallView: View {
     }
 
     private func currentPosition(in size: CGSize) -> CGPoint {
-        if let position { return position }
-        return Self.defaultPosition(in: size, ballSize: ballSize)
+        // 横竖屏切换后窗口尺寸变了，旧坐标可能跑出屏幕，这里每次都夹回可视区域
+        let base = position ?? Self.defaultPosition(in: size, ballSize: ballSize)
+        let maxX = max(8, size.width - ballSize - 8)
+        let maxY = max(56, size.height - ballSize - 24)
+        return CGPoint(
+            x: min(max(8, base.x), maxX),
+            y: min(max(56, base.y), maxY)
+        )
     }
 
     private static func defaultPosition(in size: CGSize, ballSize: CGFloat) -> CGPoint {
