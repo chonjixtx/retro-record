@@ -170,6 +170,20 @@ static FBSystemShellInitializeFn ResolveFBSystemShellInitialize(void) {
     }
     sOrientationObserver = nil;
     sOverlayWindow = nil;
+
+    // 真正把浮动 Scene 从系统移除，避免关闭后冻结残留
+    @try {
+        if (sFloatingScene && NSClassFromString(@"FBSceneManager")) {
+            FBSceneManager *manager = [FBSceneManager sharedInstance];
+            if ([manager respondsToSelector:@selector(removeScene:)]) {
+                [manager removeScene:sFloatingScene];
+            } else if ([manager respondsToSelector:@selector(destroyScene:)]) {
+                [manager performSelector:@selector(destroyScene:) withObject:sFloatingScene];
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[overlay] teardown removeScene exception: %@", exception);
+    }
     sFloatingScene = nil;
     sSceneBinder = nil;
     sSceneCreated = NO;
