@@ -78,12 +78,8 @@ struct ContentView: View {
         }
         .onChange(of: model.exportQuality) { _ in model.persist() }
         .onChange(of: model.systemCapturing) { capturing in
-            // 录屏一开始就挂上常驻通知，停止就撤掉
-            if capturing {
-                SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
-            } else {
-                SaveNotification.cancel()
-            }
+            // 录屏一开始挂上常驻通知；停止要延时确认再撤，避免 isCaptured 闪 false 误删
+            model.handleCaptureChanged(capturing)
         }
         .onOpenURL { url in
             if url.host == "save" || url.absoluteString.contains("save") {
@@ -240,6 +236,20 @@ struct ContentView: View {
                         .font(.footnote)
                         .buttonStyle(.bordered)
                     Button("打开系统设置") { model.openSystemSettings() }
+                        .font(.footnote)
+                        .buttonStyle(.bordered)
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 10) {
+                    Button("发测试通知") {
+                        SaveNotification.registerCategory()
+                        SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
+                        model.notice = Notice(text: "已发测试通知。回桌面或切到别的 App，下拉通知中心长按它，看有没有「保存最近片段」。若完全没有通知，说明通知权限被关了：设置 → 通知 → 回溯 → 允许通知。", isError: false)
+                    }
+                    .font(.footnote)
+                    .buttonStyle(.bordered)
+                    Button("请求通知权限") { SaveNotification.requestAuthorization() }
                         .font(.footnote)
                         .buttonStyle(.bordered)
                     Spacer(minLength: 0)
@@ -462,12 +472,11 @@ struct ContentView: View {
             if !FloatingBallController.overlayInBackground {
                 FloatingBallController.shared.hide()
             }
-            // 关键加固：开始录制后若很快切走（不到 2 秒轮询间隔），App 可能来不及
-            // 检测到录屏就已挂起 → 通知从未发出。退后台这一刻是最后的机会，必发。
+            // 关键：先刷新一次状态，否则读到的 systemCapturing 还是切走前的旧值(false)，
+            // 会导致「开始录制后立刻切走 → 通知从没发出」。
+            model.refresh()
             if model.systemCapturing {
                 SaveNotification.post(retentionSeconds: Int(model.retentionSeconds))
-            } else {
-                SaveNotification.cancel()
             }
         @unknown default:
             break
