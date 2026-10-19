@@ -6,10 +6,14 @@ import UIKit
 /// 它就是需求里"圆形悬浮窗 + 回溯两个字"的实现。
 ///
 /// 两种窗口形态：
-/// 1. 全局悬浮窗（TrollStore）：App 通过 FrontBoard 私有 API 创建一个独立浮动 Scene，
-///    它的窗口挂在系统最上层（层级 10000）。切到别的 App、回桌面、锁屏，球依然在，
-///    可点击、可拖动。依赖 TrollStore 安装时保留的 platform-application 等 entitlements。
-/// 2. App 内窗口（普通签名 / 全能签 / 浮动 Scene 未就绪时）：只能在 App 前台显示，
+/// 1. 全局悬浮窗（TrollStore）：App 通过 FrontBoard 私有 API 创建一个**空锚浮动 Scene**
+///    （Scene 内零窗口！），撑起 App 的系统级前台存在；真正的悬浮窗口是收到
+///    shellReady 回调后创建的「不挂 windowScene 的独立 UIWindow」（层级 10000）。
+///    切到别的 App、回桌面、锁屏，球依然在，可点击、可拖动。
+///    依赖 TrollStore 安装时保留的 platform-application 等 entitlements。
+///    ⚠️ 窗口绝不能建在浮动 Scene 里：Scene 内窗口空白处的触摸不跨 Scene 下传，
+///    会整屏卡死（v1.3.0 真机两连卡的教训）。
+/// 2. App 内窗口（普通签名 / 全能签 / 锚定 Scene 未就绪时）：只能在 App 前台显示，
 ///    切到别的 App 就消失（iOS 沙盒限制）。
 ///
 /// 关键设计：整屏窗口的根视图是一个「不收触摸」的普通 UIViewController，
@@ -119,6 +123,8 @@ final class FloatingBallController {
         overlayBallHost?.view.isHidden = true
         inAppBallHost?.view.isHidden = true
         inAppWindow?.isHidden = true
+        // 全局窗口也整个藏掉：空的全屏窗口虽然 hitTest 全放行，但藏掉更干净
+        overlayWindow?.isHidden = true
         KeepAlive.shared.stop()
     }
 
@@ -131,29 +137,33 @@ final class FloatingBallController {
         }
     }
 
-    // MARK: - 全局悬浮窗生命周期（OverlaySceneDelegate 调用）
+    // MARK: - 全局悬浮窗生命周期（RetroAppDelegate 通过 OverlayBridge 回调）
 
-    /// 浮动 Scene 连上了，窗口已建好（默认隐藏）
-    func overlaySceneConnected(_ window: PassthroughWindow) {
-        overlayWindow = window
-        // 根视图设为不收触摸；球稍后作为可交互子视图挂上去（见 PassthroughWindow 注释）
-        if let vc = window.rootViewController {
-            vc.view.backgroundColor = .clear
-            vc.view.isUserInteractionEnabled = true
-        }
+    /// 锚定 Scene 就绪（FBSystemShellInitialize 完成、浮动 Scene 已建好）。
+    ///
+    /// 此刻才创建真正的悬浮窗口——**不挂 windowScene 的独立 UIWindow**，
+    /// 照抄原项目（nongshifu/SysView）AppDelegate 的做法：
+    /// `[[UIWindow alloc] initWithFrame:]`，窗口属于 App 进程的无 Scene 空间。
+    /// 只有这种窗口的触摸穿透才能正常落到桌面/其他 App；建在浮动 Scene 里的窗口
+    /// 空白处触摸不跨 Scene 下传，会整屏卡死（v1.3.0 两次真机卡死的教训）。
+    /// 窗口先隐藏，等 show() / 开关打开时再放出。
+    func overlayShellReady() {
+        guard RetroEnv.backgroundOverlayAvailable, overlayWindow == nil else { return }
+        let w = PassthroughWindow(frame: UIScreen.main.bounds)
+        w.windowLevel = UIWindow.Level(rawValue: 10000)
+        w.backgroundColor = .clear
+        w.isOpaque = false
+        let vc = UIViewController()
+        vc.view.backgroundColor = .clear
+        w.rootViewController = vc
+        w.isHidden = true
+        overlayWindow = w
+        // 交给桥接层：设备旋转时用 _rotateWindowToOrientation 同步转窗口
+        OverlayBridge.attachOverlayWindow(w)
         if enabled, Self.overlayInBackground {
-            ensureOverlayBall(in: window)
-            overlayWindow?.isHidden = false
+            ensureOverlayBall(in: w)
+            w.isHidden = false
             overlayBallHost?.view.isHidden = false
-        }
-    }
-
-    /// 浮动 Scene 断开（极少见）：回退到 App 内窗口
-    func overlaySceneDisconnected() {
-        overlayWindow = nil
-        overlayBallHost = nil
-        if enabled, let onTap, let onLongPress {
-            show(onTap: onTap, onLongPress: onLongPress)
         }
     }
 
