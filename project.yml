@@ -58,6 +58,13 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # ObjC 桥接（全局悬浮窗 Sources/App/Overlay/*.m 通过它暴露给 Swift）
         SWIFT_OBJC_BRIDGING_HEADER: Sources/App/Overlay-Bridging.h
+        # 全局悬浮窗：链接 FrontBoard 私有框架（tbd 声明文件，仅主 App 需要）。
+        # 这些框架在设备上必然存在（/System/Library/PrivateFrameworks/），
+        # 链接只为在编译期解析 FBSceneManager 等私有类符号；调用全部有存在性检查。
+        OTHER_LDFLAGS:
+          - "$(SRCROOT)/PrivateFrameworks/FrontBoard.tbd"
+          - "$(SRCROOT)/PrivateFrameworks/FrontBoardServices.tbd"
+          - "$(SRCROOT)/PrivateFrameworks/RunningBoardServices.tbd"
 
   RecorderExtension:
     type: app-extension
