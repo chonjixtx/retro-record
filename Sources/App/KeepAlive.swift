@@ -5,8 +5,9 @@ import AVFoundation
 ///
 /// 只在「后台悬浮球」开关打开时运行，关掉即停，不留后台痕迹。
 /// 用 .mixWithOthers，不会打断别的 App 正在播的音乐。
-enum KeepAlive {
+final class KeepAlive {
     static let shared = KeepAlive()
+    private init() {}
 
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
