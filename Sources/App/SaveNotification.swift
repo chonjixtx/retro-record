@@ -26,19 +26,43 @@ enum SaveNotification {
     }
 
     static func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            DispatchQueue.main.async {
+                if let error {
+                    LogBridge.local("NOTIF_AUTH_FAIL \(error.localizedDescription)")
+                } else {
+                    LogBridge.local(granted ? "NOTIF_AUTH_OK" : "NOTIF_AUTH_DENIED")
+                }
+            }
+        }
     }
 
-    /// 开始录制 → 发常驻通知
+    /// 开始录制 → 发常驻通知（若通知权限被拒，写日志，诊断区可见）
     static func post(retentionSeconds: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = "回溯录制中"
-        // iOS 的通知按钮默认折叠：必须「长按通知」才会显示动作按钮，文案里写明
-        content.body = "在通知中心【长按】这条通知 → 点「保存最近片段」，即可保存最近 \(retentionSeconds) 秒（轻点会打开 App）"
-        content.categoryIdentifier = categoryID
-        content.sound = nil
-        let request = UNNotificationRequest(identifier: requestID, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { _ in }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            let status = settings.authorizationStatus
+            guard status == .authorized || status == .provisional || status == .ephemeral else {
+                DispatchQueue.main.async { LogBridge.local("NOTIF_SKIP_AUTH_\(status.rawValue)") }
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = "回溯录制中"
+            // iOS 的通知按钮默认折叠：必须「长按通知」才会显示动作按钮，文案里写明
+            content.body = "在通知中心【长按】这条通知 → 点「保存最近片段」，即可保存最近 \(retentionSeconds) 秒（轻点会打开 App）"
+            content.categoryIdentifier = categoryID
+            content.sound = nil
+            let request = UNNotificationRequest(identifier: requestID, content: content, trigger: nil)
+            center.add(request) { error in
+                DispatchQueue.main.async {
+                    if let error {
+                        LogBridge.local("NOTIF_ADD_FAIL \(error.localizedDescription)")
+                    } else {
+                        LogBridge.local("NOTIF_ADD_OK")
+                    }
+                }
+            }
+        }
     }
 
     /// 停止录制 → 撤掉通知
