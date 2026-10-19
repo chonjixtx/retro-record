@@ -49,7 +49,23 @@ struct ContentView: View {
 
             // 通知栏一键保存：把动作回调接到 saveRetro
             let vm = model
-            SaveTrigger.shared.onSave = { [weak vm] in vm?.saveRetro() }
+            SaveTrigger.shared.onSave = { [weak vm] in
+                guard let vm else { return }
+                vm.saveRetro()
+                // iOS 在通知被点击后会自动移除它 → 2 秒后补发一条，通知常驻可反复保存
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak vm] in
+                    guard let vm else { return }
+                    SaveNotification.post(retentionSeconds: Int(vm.retentionSeconds), delay: 1)
+                }
+                // 从通知栏触发时 App 在后台，导出需要额外运行时间，申请一段后台宽限
+                var bgTask = UIApplication.shared.beginBackgroundTask(withName: "retro-notif-save")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 28) {
+                    if bgTask != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTask)
+                        bgTask = .invalid
+                    }
+                }
+            }
             SaveNotification.registerCategory()
             SaveNotification.requestAuthorization()
             SaveNotification.statusText { notifStatus = $0 }
