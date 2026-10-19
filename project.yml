@@ -51,8 +51,8 @@ targets:
       base:
         PRODUCT_NAME: RetroRecord
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder
-        MARKETING_VERSION: 1.2.0
-        CURRENT_PROJECT_VERSION: 3
+        MARKETING_VERSION: 1.3.0
+        CURRENT_PROJECT_VERSION: 4
         INFOPLIST_FILE: Resources/App-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/App.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -69,7 +69,12 @@ targets:
       base:
         PRODUCT_NAME: RecorderExtension
         PRODUCT_BUNDLE_IDENTIFIER: com.retro.recorder.broadcast
-        MARKETING_VERSION: 1.2.0
-        CURRENT_PROJECT_VERSION: 3
+        MARKETING_VERSION: 1.3.0
+        CURRENT_PROJECT_VERSION: 4
         INFOPLIST_FILE: Resources/RecorderExtension-Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/RecorderExtension.entitlements
+
+# 全能签变体（iOS 17~27、不依赖 App Group）的构建方式：
+# 在任意 xcodebuild 调用上加 OTHER_SWIFT_FLAGS="-D NO_APPGROUP"，
+# 主 App 与录制扩展会同时以"无 App Group 降级模式"编译，见 Sources/Shared/RetroEnv.swift。
+# CI 里已配置双变体构建（.github/workflows/build-unsigned-ipa.yml）。

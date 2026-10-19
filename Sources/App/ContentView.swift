@@ -86,7 +86,7 @@ struct ContentView: View {
                         .font(.headline)
                     Text(AppGroup.isShared
                          ? "已缓存 \(model.cachedDurationText) · 占用 \(model.cachedSizeText)"
-                         : "降级模式：分片写在录制扩展自己的沙盒里，点保存后直接进相册")
+                         : model.degradedCacheText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -279,11 +279,14 @@ struct ContentView: View {
 
                 Toggle("录进麦克风声音", isOn: $model.microphoneEnabled)
                 Toggle("App 内悬浮球", isOn: $model.floatingBallEnabled)
-                Toggle("后台悬浮球（实验）", isOn: $backgroundOverlay)
-                    .onChange(of: backgroundOverlay) { _ in
-                        // 让 FloatingBallController.show() 按新开关决定保活启停
-                        syncFloatingBall(enabled: model.floatingBallEnabled)
-                    }
+                // 后台悬浮球需要 TrollStore 的 platform-application 权限，全能签变体没有，直接隐藏
+                if RetroEnv.backgroundOverlayAvailable {
+                    Toggle("后台悬浮球（实验）", isOn: $backgroundOverlay)
+                        .onChange(of: backgroundOverlay) { _ in
+                            // 让 FloatingBallController.show() 按新开关决定保活启停
+                            syncFloatingBall(enabled: model.floatingBallEnabled)
+                        }
+                }
 
                 Button(role: .destructive) {
                     model.clearCache()
@@ -338,7 +341,9 @@ struct ContentView: View {
                     NoteRow(text: "保底办法：下拉控制中心点红色按钮停止录制，最近一段会自动存进相册。")
                 }
                 NoteRow(text: "锁屏、息屏、来电会中断录制。想一直录就别让设备锁屏。")
-                NoteRow(text: "「后台悬浮球」开启后，切到别的 App 球依然在屏幕最上层，点它即可在后台保存；代价是球会出现在录出来的画面里，且后台保活会略增耗电。关掉此开关则恢复为仅 App 内显示。")
+                if RetroEnv.backgroundOverlayAvailable {
+                    NoteRow(text: "「后台悬浮球」开启后，切到别的 App 球依然在屏幕最上层，点它即可在后台保存；代价是球会出现在录出来的画面里，且后台保活会略增耗电。关掉此开关则恢复为仅 App 内显示。")
+                }
                 NoteRow(text: "持续录屏耗电明显，1080p / 6Mbps 下每 10 分钟约 450MB。")
             }
         }

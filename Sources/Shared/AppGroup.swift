@@ -41,6 +41,23 @@ public enum AppGroup {
         resolved = true
         log.removeAll()
 
+        // 全能签变体：编译期就决定不用 App Group，也不再试探公共目录
+        // （沙盒下那些路径必然写不进去，试探纯属浪费时间）。
+        // 直接固定为降级模式，保存由录制扩展自行写相册。
+        if RetroEnv.noAppGroup {
+            if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+                cachedContainerURL = caches
+                cachedMode = .localSandbox
+                log.append("全能签变体：不使用 App Group")
+                log.append(caches.path)
+            } else {
+                cachedContainerURL = nil
+                cachedMode = .localSandbox
+                log.append("全能签变体：无任何可写目录")
+            }
+            return
+        }
+
         if let url = groupContainerURL() {
             cachedContainerURL = url
             cachedMode = .appGroup
@@ -110,6 +127,9 @@ public enum AppGroup {
         case .publicDirectory:
             return "共享存储正常 · 公共目录（TrollStore 模式）"
         case .localSandbox:
+            if RetroEnv.noAppGroup {
+                return "全能签版：不依赖 App Group，分片存于录制扩展沙盒，保存后直接写入相册"
+            }
             return "降级模式：无法跨进程共享，保存将由录制扩展直接写入相册"
         }
     }

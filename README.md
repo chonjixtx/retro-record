@@ -64,7 +64,9 @@
 
 1. 把整个 `回溯录屏-iOS` 目录推到一个 GitHub 仓库（保证 `.github/workflows` 在仓库根目录；若放在子目录，需把 workflow 移到根 `.github/workflows/` 并调 `working-directory`）。
 2. 仓库 → Actions → 选 `build-unsigned-ipa` → Run workflow。
-3. 跑完在 Artifacts 下载 `RetroRecord-unsigned-ipa`，里面是 `RetroRecord-unsigned.ipa`。
+3. 跑完在 Artifacts 下载：
+   - `RetroRecord-unsigned-ipa` → `RetroRecord-unsigned.ipa`（**标准版**，带 App Group，需付费证书或 TrollStore）
+   - `RetroRecord-noappgroup-unsigned-ipa` → `RetroRecord-noappgroup-unsigned.ipa`（**全能签版**，不需要 App Group，免费证书即可签名安装）
 
 ### 路线 B：本机 macOS
 
@@ -103,6 +105,17 @@ cd build/ipa && zip -qry ../RetroRecord-unsigned.ipa Payload
 
 > 掉签提醒：共享企业证书随时可能被 Apple 吊销，届时 App 直接打不开，需要重新签名安装。长期自用建议付费个人证书。
 
+### 没有付费证书？用「全能签版」（iOS 17~27，不依赖 App Group）
+
+免费 Apple ID 证书签不了 App Group，标准版会退化成"能录、取不出"。针对这个场景 CI 同时产出**全能签版**：
+
+1. 下载 `RetroRecord-noappgroup-unsigned.ipa`，全能签里直接签名安装（免费证书即可，**无需创建 App Group、无需注入任何 entitlements**）。
+2. 安装后打开 → 开始录制 → 系统弹层选「回溯录制」。
+3. 点「保存最近 N 秒」：主 App 通过系统级 Darwin 通知让录制扩展**自己拼接并直接写入系统相册**，去「照片」App 的最近项目里就能看到。
+4. 保底路径：下拉控制中心点红色按钮停止录制，最近一段也会自动存进相册。
+5. 界面差异：设置里没有「后台悬浮球」开关（那需要 TrollStore 的 platform-application 权限，全能签拿不到）；「已保存」列表为空是正常的——视频直接进相册，不经过主 App。
+6. 代价：保存由扩展进程完成，比标准版慢几秒；相册里可能出现多段（合成失败时的兜底）。
+
 ## 六、使用方式
 
 - **保留时长**：默认 600 秒，界面里可输入任意秒数（10–7200）。改完立即写进 App Group，下次起录生效。
@@ -118,6 +131,8 @@ cd build/ipa && zip -qry ../RetroRecord-unsigned.ipa Payload
 | 点「开始录制」没反应 | 扩展没被签进去。检查 ipa 里 `Payload/RetroRecord.app/PlugIns/` 是否有两个 appex |
 | 系统弹层里没有「回溯录制」 | 扩展 Info.plist 的 `NSExtensionPointIdentifier` 被破坏，或扩展签名失败 |
 | 缓存一直是 00:00 | App Group 没生效。用 Xcode 连真机看控制台是否有 `containerURL` 返回 nil |
+| 全能签版保存后相册里没有 | 看「诊断」日志：没有 SAVE_REQ = 扩展没收到（确认录制在跑）；PHOTO_FAIL = 相册权限被拒，去系统设置里打开 |
+| 全能签版「已保存」列表为空 | 正常。该变体的视频直接进系统相册，不经过主 App 的导出目录 |
 | 保存报"还没有缓存到任何画面" | 录制确实没在跑；或锁屏导致扩展被中断 |
 | 视频开头黑屏 | 用了「原生直通」导出；改用 1080P 预设（会重编码，切点精确） |
 | 录制几分钟就被系统杀掉 | 码率过高或设备内存紧张，降到 4–6 Mbps |

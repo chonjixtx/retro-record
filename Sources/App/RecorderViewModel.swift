@@ -114,10 +114,16 @@ final class RecorderViewModel: ObservableObject {
         let recording = Heartbeat.isRecording()
         isRecording = recording
         wasInterrupted = Heartbeat.wasInterrupted()
-        let segments = SegmentStore.allSegments()
-        cachedSeconds = Double(segments.count) * SegmentStore.segmentSeconds
-        cachedSizeBytes = SegmentStore.totalSizeBytes()
         extensionLogs = LogSink.shared.snapshot
+        if AppGroup.isShared {
+            let segments = SegmentStore.allSegments()
+            cachedSeconds = Double(segments.count) * SegmentStore.segmentSeconds
+            cachedSizeBytes = SegmentStore.totalSizeBytes()
+        } else {
+            // 降级模式：主 App 读不到分片目录，缓存时长只能从扩展心跳日志反推
+            cachedSeconds = Self.estimateCachedSeconds(from: extensionLogs)
+            cachedSizeBytes = 0
+        }
         systemCapturing = UIScreen.main.isCaptured
         // 降级模式没有共享配置文件：用户改秒数时扩展可能还没起录（监听还没挂上），
         // 所以这里持续补发一次，保证扩展起来后一定能拿到正确的保留时长
@@ -131,6 +137,30 @@ final class RecorderViewModel: ObservableObject {
 
     var captureText: String {
         systemCapturing ? "系统录制：进行中（状态栏应有红色标记）" : "系统录制：未开启"
+    }
+
+    /// 降级模式下主 App 读不到分片目录，缓存时长只能从扩展心跳日志反推：
+    /// 扩展每写完一片就报一次 SEG_OK_<数量>，主 App 探活时也会报 SEGS_<数量>。
+    static func estimateCachedSeconds(from logs: [String]) -> Double {
+        var count = 0
+        for line in logs {
+            for marker in ["SEG_OK_", "SEGS_"] {
+                guard let range = line.range(of: marker) else { continue }
+                let digits = line[range.upperBound...].prefix { $0.isNumber }
+                if let value = Int(digits) {
+                    count = max(count, value)
+                }
+            }
+        }
+        return Double(count) * SegmentStore.segmentSeconds
+    }
+
+    /// 降级模式下的缓存状态文案
+    var degradedCacheText: String {
+        if cachedSeconds >= SegmentStore.segmentSeconds {
+            return "已缓存约 \(cachedDurationText)（按扩展心跳估算）· 分片在录制扩展沙盒里，保存后直接进相册"
+        }
+        return "降级模式：分片写在录制扩展自己的沙盒里，点保存后直接进相册"
     }
 
     /// 最近一条扩展日志（去掉主 App 自己写的那部分）

@@ -19,7 +19,10 @@ final class FloatingBallController {
     var isVisible: Bool { window != nil }
 
     /// 后台悬浮球开关（设置页可改，默认开）。关掉即回到普通签名行为：只在 App 前台显示。
+    /// 全能签变体没有 platform-application 权限，后台悬浮一律不可用，恒返回 false，
+    /// 连后台音频保活都不会启动。
     static var overlayInBackground: Bool {
+        guard RetroEnv.backgroundOverlayAvailable else { return false }
         let defaults = UserDefaults.standard
         if defaults.object(forKey: "retro.bg.overlay") == nil { return true }
         return defaults.bool(forKey: "retro.bg.overlay")
