@@ -221,6 +221,14 @@ final class RecorderViewModel: ObservableObject {
         persist()
         // 降级模式没共享目录，配置只能走通知通道送过去
         NotifyBridge.postConfig(retentionSeconds: Int(retentionSeconds))
+        // 此刻 App 一定在前台，是挂常驻通知最可靠的时机（退后台再发可能来不及）
+        SaveNotification.post(retentionSeconds: Int(retentionSeconds))
+        // 兜底：若 25 秒内没真正开始录（用户取消了系统选择器），把通知撤掉
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            guard let self else { return }
+            if !self.systemCapturing { SaveNotification.cancel() }
+        }
     }
 
     func markInterruptedHandled() {
@@ -324,6 +332,26 @@ final class RecorderViewModel: ObservableObject {
                 ? "录制是开着的，但录制扩展没有回应保存请求。\n改用保底办法：下拉控制中心 → 点红色录制按钮停止 → 视频会自动存进相册。"
                 : "现在没有在录屏。\n先点「开始录制」→ 选「回溯录制」→ 开始直播，等 30 秒后再点保存。"
             notice = Notice(text: hint, isError: true)
+        }
+    }
+
+    /// 录屏状态变化 → 挂上/撤掉常驻通知。
+    /// 撤掉必须延时确认：刚开始录屏时 `isCaptured` 可能短暂闪 false，
+    /// 立即 cancel 会把刚发出的通知删掉，造成「通知从来没出现过」的假象。
+    private var notifCancelTask: Task<Void, Never>?
+
+    func handleCaptureChanged(_ capturing: Bool) {
+        notifCancelTask?.cancel()
+        if capturing {
+            SaveNotification.post(retentionSeconds: Int(retentionSeconds))
+            return
+        }
+        notifCancelTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            if !self.systemCapturing && !Heartbeat.isRecording() {
+                SaveNotification.cancel()
+            }
         }
     }
 
