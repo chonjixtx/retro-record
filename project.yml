@@ -99,3 +99,5 @@ targets:
 # CI 里已配置双变体构建（.github/workflows/build-unsigned-ipa.yml）。
 
 # build24：保存链路兜底（相册权限不足时保留 mp4 并记日志）。上一次 CI 被平台取消，重新触发构建。
+
+# build24 retry2：上一次排队 15 分钟后被平台取消（非编译错误），重新触发。
