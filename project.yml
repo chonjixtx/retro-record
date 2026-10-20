@@ -97,3 +97,5 @@ targets:
 # 在任意 xcodebuild 调用上加 OTHER_SWIFT_FLAGS="-D NO_APPGROUP"，
 # 主 App 与录制扩展会同时以"无 App Group 降级模式"编译，见 Sources/Shared/RetroEnv.swift。
 # CI 里已配置双变体构建（.github/workflows/build-unsigned-ipa.yml）。
+
+# build24：保存链路兜底（相册权限不足时保留 mp4 并记日志）。上一次 CI 被平台取消，重新触发构建。
