@@ -181,8 +181,8 @@ static void RRCenterToast(NSString *text, BOOL ok) {
     lb.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
     lb.textAlignment = NSTextAlignmentCenter;
     lb.numberOfLines = 2;
-    lb.backgroundColor = ok ? [[UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92]
-                              : [[UIColor blackColor] colorWithAlphaComponent:0.85]];
+    lb.backgroundColor = ok ? [UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92]
+                            : [[UIColor blackColor] colorWithAlphaComponent:0.85];
     lb.layer.cornerRadius = 12;
     lb.layer.masksToBounds = YES;
     lb.userInteractionEnabled = NO;
