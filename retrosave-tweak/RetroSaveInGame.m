@@ -36,6 +36,54 @@ static void RRPostTrigger(void) {
                                          (__bridge CFStringRef)name, NULL, NULL, YES);
 }
 
+/* ---------- 确认录制进程收到了没有 ---------- */
+
+#define RR_LOG_PREFIX @"com.retro.recorder.log."
+
+static BOOL g_triggerAck = NO;
+static BOOL g_ackOn = NO;
+
+/* 扩展收到 trigger 后会立刻广播一条 TRIG_SAVE_<秒数> 日志。
+   Darwin 通知在扩展侧偶发收不到（或被系统杀进程），这条回执是唯一能当场判断
+   「指令到底有没有送达」的信号 —— 拿不到就直接拉起主 App 兜底，绝不静默失败。 */
+static void RRAckCallback(CFNotificationCenterRef center, void *observer,
+                          CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    if (!name) return;
+    NSString *n = (__bridge NSString *)name;
+    if (![n hasPrefix:RR_LOG_PREFIX]) return;
+    NSString *body = [n substringFromIndex:[RR_LOG_PREFIX length]];
+    if ([body hasPrefix:@"TRIG_SAVE"]) g_triggerAck = YES;
+}
+
+static void RRAckWatchBegin(void) {
+    g_triggerAck = NO;
+    if (g_ackOn) return;
+    g_ackOn = YES;
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                    RRAckCallback, NULL, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+}
+
+static void RRAckWatchEnd(void) {
+    if (!g_ackOn) return;
+    g_ackOn = NO;
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, NULL, NULL);
+}
+
+static void RRFallbackToApp(NSInteger seconds) {
+    UIApplication *app = [UIApplication sharedApplication];
+    if (!app) return;
+    NSURL *u = [NSURL URLWithString:[NSString stringWithFormat:@"retrorecord://save?seconds=%ld", (long)seconds]];
+    if ([app respondsToSelector:@selector(openURL:options:completionHandler:)]) {
+        [app openURL:u options:@{} completionHandler:nil];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [app openURL:u];
+#pragma clang diagnostic pop
+    }
+}
+
 /* ---------- 界面辅助 ---------- */
 
 static UIWindow *RRKeyWindow(void) {
@@ -97,13 +145,36 @@ static void RRUpdateTitle(void) {
 }
 
 - (void)tapped {
+    NSInteger sec = g_seconds;
+
+    // 连发三次（0 / 0.25 / 0.5 秒）：单条 Darwin 通知偶发丢失时后面两次还能补上
+    RRAckWatchBegin();
     RRPostTrigger();
-    RRToast([NSString stringWithFormat:@"已请求保存最近 %ld 秒", (long)g_seconds]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ RRPostTrigger(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ RRPostTrigger(); });
+
+    RRToast([NSString stringWithFormat:@"已请求保存最近 %ld 秒", (long)sec]);
     [UIView animateWithDuration:0.09 animations:^{
         g_btn.transform = CGAffineTransformMakeScale(1.18, 1.18);
     } completion:^(BOOL f) {
         [UIView animateWithDuration:0.09 animations:^{ g_btn.transform = CGAffineTransformIdentity; }];
     }];
+
+    // 1.8 秒后回执还没来 = 录制进程没收到（没在录 / 广播已被系统杀掉 / 通道没到）。
+    // 这时直接拉起主 App 兜底保存：宁可短暂切出游戏一下，也绝不出现「点了没视频」。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        BOOL got = g_triggerAck;
+        RRAckWatchEnd();
+        if (got) {
+            RRToast([NSString stringWithFormat:@"录制进程已收到，正在保存 %ld 秒", (long)sec]);
+        } else {
+            RRFallbackToApp(sec);
+            RRToast(@"未检测到录制进程，已切到「回溯」保存");
+        }
+    });
 }
 
 - (void)longPressed:(UILongPressGestureRecognizer *)ges {

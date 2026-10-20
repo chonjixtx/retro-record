@@ -98,11 +98,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
             triggerObservation = nil
         }
 
-        // 降级模式下的保底路径：用户停录制就等于保存。
-        // 这条路径完全在本进程内完成，不依赖任何跨进程通信。
-        if !AppGroup.isShared {
-            autoSaveOnStop()
-        }
+        // 保底路径：录制一结束就把已有的分片存进相册，不依赖任何跨进程通信。
+        //
+        // 以前只在降级模式做，结果共享模式下广播一旦被系统杀掉（进大型游戏内存紧张时
+        // 很常见），已录的分片就全白录了 —— 用户点保存按钮没反应、相册空空如也，
+        // 根因往往就在这里。broadcastFinished 是本进程最后一次能行动的机会，必须兜住。
+        autoSaveOnStop()
 
         NotifyBridge.postLog("EXT_STOP")
         NotifyBridge.mirrorToFile = false
