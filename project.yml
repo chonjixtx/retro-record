@@ -107,3 +107,5 @@ targets:
 # auto-build retry #1: 上一次排队后被平台取消（非编译错误），自动重新触发。
 
 # auto-build retry #2: 上一次排队后被平台取消（非编译错误），自动重新触发。
+
+# auto-build retry #1: 上一次排队后被平台取消（非编译错误），自动重新触发。
