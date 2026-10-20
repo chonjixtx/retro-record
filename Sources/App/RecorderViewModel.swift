@@ -244,7 +244,7 @@ final class RecorderViewModel: ObservableObject {
 
     // MARK: - 回溯保存
 
-    func saveRetro() {
+    func saveRetro(seconds overrideSeconds: Double? = nil) {
         guard !isExporting else { return }
 
         // 降级模式：主 App 读不到分片，只能通知录制扩展自己导出到相册
@@ -259,8 +259,8 @@ final class RecorderViewModel: ObservableObject {
         }
 
         isExporting = true
-        exportProgress = "正在拼接最近 \(Int(retentionSeconds)) 秒…"
-        let seconds = retentionSeconds
+        let seconds = overrideSeconds ?? retentionSeconds
+        exportProgress = "正在拼接最近 \(Int(seconds)) 秒…"
         let quality = exportQuality
 
         // 关键修复：Swift 5 并发模式下 nonisolated async 函数会继承调用方的
@@ -303,6 +303,19 @@ final class RecorderViewModel: ObservableObject {
     @MainActor
     private func failPhoto(_ error: Error) {
         notice = Notice(text: "视频已保存到 App 内，存入相册失败：\(error.localizedDescription)", isError: true)
+    }
+
+    /// 跨 App 触发保存：retrorecord://save?seconds=60
+    ///
+    /// iOS 不允许任何 App 的窗口浮在别的 App 之上，所以「游戏里点球保存」
+    /// 唯一真正可用的替代，是借助系统自己的悬浮层——辅助触控小白点：
+    /// 小白点 → 快捷指令 → 打开 retrorecord://save → 本 App 被拉起并保存。
+    /// 代价是短暂离开游戏，换来 100% 可用（不依赖任何私有 API）。
+    @MainActor
+    func saveFromDeepLink(seconds: Double?) {
+        // 刚被拉起时缓存时长还是旧值，必须先刷新再判断
+        refresh()
+        saveRetro(seconds: seconds)
     }
 
     func open(_ url: URL) {
