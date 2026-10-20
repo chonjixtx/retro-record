@@ -579,17 +579,80 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     private func saveToPhotos(url: URL, cleanup: @escaping () -> Void, done: @escaping (Bool) -> Void) {
-        PHPhotoLibrary.shared().performChanges {
-            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-        } completionHandler: { success, error in
-            if success {
-                NotifyBridge.postLog("PHOTO_OK")
-            } else {
-                let code = (error as NSError?)?.code ?? -1
-                NotifyBridge.postLog("PHOTO_FAIL_\(code)")
+        requestPhotoAuthIfNeeded { [weak self] granted in
+            guard let self else { cleanup(); done(false); return }
+            guard granted else {
+                // 扩展进程拿不到相册权限（iOS 上扩展里弹不出授权框是最常见原因）。
+                // 这时不能把 mp4 当临时文件删掉 —— 先留一份，用户至少还有东西可拿。
+                NotifyBridge.postLog("PHOTO_AUTH_NO")
+                self.keepCopy(of: url)
+                cleanup()
+                done(false)
+                return
             }
-            cleanup()
-            done(success)
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            } completionHandler: { success, error in
+                if success {
+                    NotifyBridge.postLog("PHOTO_OK")
+                } else {
+                    let ns = error as NSError?
+                    NotifyBridge.postLog("PHOTO_FAIL_\(ns?.code ?? -1)")
+                    self.keepCopy(of: url)
+                }
+                cleanup()
+                done(success)
+            }
+        }
+    }
+
+    /// 相册权限：已授权直接放行；未决定时主动申请一次（带 3 秒超时，
+    /// 因为扩展进程里授权回调有可能永远不来，不能干等）。
+    private func requestPhotoAuthIfNeeded(_ completion: @escaping (Bool) -> Void) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        NotifyBridge.postLog("AUTH_NOW_\(Self.photoAuthTag())")
+        if status == .authorized || status == .limited {
+            completion(true)
+            return
+        }
+        if status != .notDetermined {
+            completion(false)
+            return
+        }
+        let gate = NSLock()
+        var settled = false
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { st in
+            gate.lock()
+            if settled { gate.unlock(); return }
+            settled = true
+            gate.unlock()
+            NotifyBridge.postLog("AUTH_REQ_\(st == .authorized || st == .limited ? "ok" : "no")")
+            completion(st == .authorized || st == .limited)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+            gate.lock()
+            if settled { gate.unlock(); return }
+            settled = true
+            gate.unlock()
+            NotifyBridge.postLog("AUTH_REQ_TIMEOUT")
+            completion(PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized)
+        }
+    }
+
+    /// 导出失败 / 相册写不进去时，把成品 mp4 留一份在导出目录里。
+    private func keepCopy(of url: URL) {
+        guard let dir = AppGroup.exportsURL else {
+            NotifyBridge.postLog("KEEP_NODIR")
+            return
+        }
+        let name = "retro-\(Int(Date().timeIntervalSince1970)).mp4"
+        let dest = dir.appendingPathComponent(name)
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.copyItem(at: url, to: dest)
+            NotifyBridge.postLog("KEEP_OK_\(name)")
+        } catch {
+            NotifyBridge.postLog("KEEP_FAIL")
         }
     }
 
@@ -616,6 +679,8 @@ final class SampleHandler: RPBroadcastSampleHandler {
             if !success {
                 let code = (error as NSError?)?.code ?? -1
                 NotifyBridge.postLog("PART_FAIL_\(index)_\(code)")
+                // 单个分片本身就是可播放的 mp4，相册写不进去就留一份文件
+                self.keepCopy(of: urls[index])
             }
             self.saveOneSegment(urls, index: index + 1, done: done + (success ? 1 : 0), finish: finish)
         }
