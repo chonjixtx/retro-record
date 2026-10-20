@@ -44,6 +44,16 @@ ls /var/containers/Bundle/Application/*/*.app/
 
 ## 第二步：构建
 
+### 方案 A（推荐）：用 GitHub Actions 免费编，不用自己准备 Mac
+
+1. 打开仓库 → `Add file` → `Create new file`
+2. 文件名填：`.github/workflows/build-tweak.yml`
+3. 内容粘贴同目录下的 `github-action-build-deb.yml`
+4. `Commit changes` —— Actions 会自动开始跑
+5. 跑完后进 `Actions` → 最新的 `build-tweak` → 底部 `RetroSaveInGame-deb` 下载
+
+### 方案 B：本地有 Mac / Linux / WSL
+
 ```bash
 # 1) 装 Theos
 git clone --recursive https://github.com/theos/theos.git ~/theos

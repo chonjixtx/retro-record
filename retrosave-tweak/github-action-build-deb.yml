@@ -1,0 +1,42 @@
+# 把这个文件放到仓库的 .github/workflows/build-tweak.yml
+# Actions 会自动用 macOS 机器编译，产出 .deb（在 Actions 页面下载）
+name: build-tweak
+on:
+  push:
+    paths:
+      - 'retrosave-tweak/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+      - name: Link iOS SDK
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          VER=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "using SDK $SDK (ver $VER)"
+          mkdir -p "$THEOS/sdks"
+          ln -sf "$SDK" "$THEOS/sdks/iPhoneOS${VER}.sdk"
+
+      - name: Install dpkg
+        run: brew install dpkg || true
+
+      - name: Build tweak
+        run: |
+          export PATH="$THEOS/bin:$PATH"
+          cd retrosave-tweak
+          make package FINALPACKAGE=1
+          ls -la packages/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RetroSaveInGame-deb
+          path: retrosave-tweak/packages/*.deb
