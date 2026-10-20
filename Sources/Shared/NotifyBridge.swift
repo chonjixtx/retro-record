@@ -231,7 +231,7 @@ public enum NotifyBridge {
         let ptr = Unmanaged.passUnretained(observation.box).toOpaque()
         // 每个注册过的名字都要单独摘掉，只摘通配会留下野观察者
         for name in observation.box.names {
-            CFNotificationCenterRemoveObserver(center, ptr, CFNotificationName(name as CFString), nil)
+            CFNotificationCenterRemoveObserver(center, ptr, name as CFString, nil)
         }
         CFNotificationCenterRemoveObserver(center, ptr, nil, nil)
     }
@@ -264,8 +264,9 @@ public enum NotifyBridge {
             CFNotificationCenterAddObserver(center, ptr, callback, nil, nil, .deliverImmediately)
         } else {
             for name in explicit {
+                // 注意：AddObserver 的 name 参数是 CFString（Post 才是 CFNotificationName）
                 CFNotificationCenterAddObserver(
-                    center, ptr, callback, CFNotificationName(name as CFString), nil, .deliverImmediately
+                    center, ptr, callback, name as CFString, nil, .deliverImmediately
                 )
             }
         }
