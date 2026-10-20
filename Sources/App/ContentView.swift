@@ -248,7 +248,7 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 // 明确告诉用户装的是哪个变体，避免"我明明要全能签版怎么还有后台悬浮球开关"这类困惑
-                Text("构建变体：\(RetroEnv.variantLabel)")
+                Text("构建变体：\(RetroEnv.variantLabel) · \(model.versionText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -262,6 +262,9 @@ struct ContentView: View {
                         .font(.footnote)
                         .buttonStyle(.borderedProminent)
                     Button("检测扩展") { model.probeExtension() }
+                        .font(.footnote)
+                        .buttonStyle(.bordered)
+                    Button("测试保存通道") { model.testTriggerChannel() }
                         .font(.footnote)
                         .buttonStyle(.bordered)
                     Button("打开系统设置") { model.openSystemSettings() }
@@ -334,6 +337,28 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     Button("清空日志") { model.clearLogs() }
+                        .font(.footnote)
+                }
+
+                if !model.extFileLogs.isEmpty {
+                    Text("扩展落盘日志（打游戏时 App 挂起漏收的那部分）")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(model.extFileLogs.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(uiColor: .tertiarySystemFill))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    Button("清空落盘日志") { model.clearExtLogFile() }
                         .font(.footnote)
                 }
             }

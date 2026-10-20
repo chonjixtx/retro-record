@@ -23,6 +23,11 @@ public enum NotifyBridge {
     /// 不看 AppGroup.isShared：触发方无法保证主 App 没被系统挂起。
     public static let triggerPrefix = "com.retro.recorder.trigger."
 
+    /// 录制扩展打开：日志除广播外再落一份到共享目录，主 App 事后可读。
+    /// 主 App 保持 false，避免把自己的日志也混进同一个文件。
+    /// 见 ExtLogFile 的说明 —— 主 App 挂起期间收不到 Darwin 通知，只能靠落盘补。
+    public static var mirrorToFile = false
+
     // MARK: - 发送
 
     private static func post(name: String) {
@@ -68,6 +73,7 @@ public enum NotifyBridge {
             if text.count >= 140 { break }
         }
         guard !text.isEmpty else { return }
+        if mirrorToFile { ExtLogFile.append(text) }
         post(name: logPrefix + text)
     }
 

@@ -51,6 +51,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
         Heartbeat.beat()
 
         LogBridge.start()
+        // 从这一行开始，日志同时落盘到共享目录：主 App 在用户打游戏时多半是挂起的，
+        // 收不到 Darwin 通知，事后只能靠文件还原扩展这边发生了什么
+        NotifyBridge.mirrorToFile = true
         NotifyBridge.postLog("EXT_START_\(AppGroup.isShared ? "shared" : "degraded")")
         NotifyBridge.postLog("DIR_\(AppGroup.containerURL?.lastPathComponent ?? "nil")")
         NotifyBridge.postLog("AUTH_\(Self.photoAuthTag())")
@@ -102,6 +105,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         }
 
         NotifyBridge.postLog("EXT_STOP")
+        NotifyBridge.mirrorToFile = false
         LogBridge.stop()
     }
 

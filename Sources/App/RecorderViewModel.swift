@@ -38,6 +38,8 @@ final class RecorderViewModel: ObservableObject {
     @Published var savedFiles: [URL] = []
     @Published var showingShareURL: URL?
     @Published var extensionLogs: [String] = []
+    /// 扩展落盘到共享目录的日志。主 App 挂起时收不到 Darwin 通知，这份是补看的
+    @Published var extFileLogs: [String] = []
     /// 系统层面是否正在录屏。`UIScreen.isCaptured` 在主 App 进程内就能读到，
     /// 不需要跨进程通信 —— 这是判断"到底在不在录"最可靠的一个信号
     @Published var systemCapturing = false
@@ -115,6 +117,8 @@ final class RecorderViewModel: ObservableObject {
         isRecording = recording
         wasInterrupted = Heartbeat.wasInterrupted()
         extensionLogs = LogSink.shared.snapshot
+        // 扩展落盘的日志：主 App 挂起期间漏收的那些，这里能补回来
+        extFileLogs = ExtLogFile.readTail(30)
         if AppGroup.isShared {
             let segments = SegmentStore.allSegments()
             cachedSeconds = Double(segments.count) * SegmentStore.segmentSeconds
@@ -195,6 +199,35 @@ final class RecorderViewModel: ObservableObject {
 
     /// 主动问一下扩展还在不在。App 进程被系统杀掉重启后，之前的日志全丢了，
     /// 只有靠这个才能立刻拿到当前状态
+    /// 版本号（诊断区显示）。装了哪一期构建，一眼就能确认
+    var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "版本 \(short)（build \(build)）"
+    }
+
+    func clearExtLogFile() {
+        ExtLogFile.clear()
+        extFileLogs = []
+    }
+
+    /// 发一条和游戏内按钮一模一样的保存指令（trigger 通道，60 秒）。
+    ///
+    /// 用来把「指令根本没送到扩展」和「扩展收到了但导出失败」区分开：
+    /// 点完看日志区有没有 TRIG_SAVE_60 —— 没有就是通道不通，有就是导出环节的问题。
+    /// 这一步在 App 内就能做，不用进游戏，比真机试错快得多。
+    func testTriggerChannel() {
+        LogBridge.local("TRIG_TEST_SENT_60")
+        NotifyBridge.postTrigger(seconds: 60)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            refresh()
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            refresh()
+        }
+    }
+
     func probeExtension() {
         LogBridge.local("PING_SENT")
         NotifyBridge.postPing()
