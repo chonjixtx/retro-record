@@ -229,10 +229,9 @@ public enum NotifyBridge {
         lock.unlock()
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let ptr = Unmanaged.passUnretained(observation.box).toOpaque()
-        // 每个注册过的名字都要单独摘掉，只摘通配会留下野观察者
-        for name in observation.box.names {
-            CFNotificationCenterRemoveObserver(center, ptr, name as CFString, nil)
-        }
+        // name / object 都传 nil = 摘掉这个 observer 句柄上的全部注册，
+        // 省得为每个名字再调一次（AddObserver 要 CFString、RemoveObserver 要
+        // CFNotificationName，两个 API 的类型还不一样，逐个摘容易写错）
         CFNotificationCenterRemoveObserver(center, ptr, nil, nil)
     }
 
