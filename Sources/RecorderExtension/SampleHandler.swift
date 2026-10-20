@@ -36,6 +36,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var saveObservation: NotifyBridge.Observation?
     private var configObservation: NotifyBridge.Observation?
     private var pingObservation: NotifyBridge.Observation?
+    private var triggerObservation: NotifyBridge.Observation?
 
     // MARK: - 生命周期
 
@@ -57,6 +58,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         registerSaveObserver()
         registerConfigObserver()
         registerPingObserver()
+        registerTriggerObserver()
     }
 
     override func broadcastPaused() {
@@ -87,6 +89,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
         if let observation = pingObservation {
             NotifyBridge.unobserve(observation)
             pingObservation = nil
+        }
+        if let observation = triggerObservation {
+            NotifyBridge.unobserve(observation)
+            triggerObservation = nil
         }
 
         // 降级模式下的保底路径：用户停录制就等于保存。
@@ -383,6 +389,23 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private func registerSaveObserver() {
         saveObservation = NotifyBridge.observeSave { [weak self] seconds in
             self?.handleSaveRequest(seconds: seconds)
+        }
+    }
+
+    /// 外部进程（越狱 tweak 的游戏内悬浮按钮等）请求保存。
+    ///
+    /// 与主 App 的保存请求不同，这里**不受 AppGroup.isShared 限制**：
+    /// 触发方无法保证主 App 没被系统挂起，而 Darwin 通知唤不醒挂起进程，
+    /// 主 App 一旦挂起就收不到任何指令；本扩展在录制期间必定存活，
+    /// 所以这里一律由本进程收尾分片并导出到相册。
+    private func registerTriggerObserver() {
+        triggerObservation = NotifyBridge.observeTrigger { [weak self] seconds in
+            guard let self else { return }
+            let target = max(seconds, 5)
+            NotifyBridge.postLog("TRIG_SAVE_\(Int(target))")
+            self.stateLock.lock()
+            self.pendingSaveSeconds = target
+            self.stateLock.unlock()
         }
     }
 

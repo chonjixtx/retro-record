@@ -17,6 +17,11 @@ public enum NotifyBridge {
     /// 主 App 主动探活：扩展收到就回一串状态。带时间戳后缀，
     /// 避免 notifyd 把连续两次同名通知合并成一次
     public static let pingPrefix = "com.retro.recorder.ping."
+    /// 外部触发保存：越狱 tweak / 游戏内悬浮按钮等跨进程入口。
+    /// 与 savePrefix 的区别 —— save 是「主 App → 扩展」的内部指令；
+    /// trigger 是「任意第三方进程 → 录制扩展」，且扩展收到后无条件导出，
+    /// 不看 AppGroup.isShared：触发方无法保证主 App 没被系统挂起。
+    public static let triggerPrefix = "com.retro.recorder.trigger."
 
     // MARK: - 发送
 
@@ -44,6 +49,11 @@ public enum NotifyBridge {
     public static func postPing() {
         let stamp = Int(Date().timeIntervalSince1970) % 100_000
         post(name: pingPrefix + String(stamp))
+    }
+
+    /// 外部进程请求「导出最近 seconds 秒」。由录制扩展接收并执行
+    public static func postTrigger(seconds: Int) {
+        post(name: triggerPrefix + String(max(seconds, 5)))
     }
 
     /// 任意一侧广播一条日志。字符会被规整成通知名能接受的形态
@@ -95,6 +105,12 @@ public enum NotifyBridge {
     public static func observePing(_ handler: @escaping () -> Void) -> Observation {
         observe(prefix: pingPrefix) { _ in
             handler()
+        }
+    }
+
+    public static func observeTrigger(_ handler: @escaping (Double) -> Void) -> Observation {
+        observe(prefix: triggerPrefix) { text in
+            handler(Double(text) ?? 60)
         }
     }
 
