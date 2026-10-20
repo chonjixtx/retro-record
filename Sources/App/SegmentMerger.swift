@@ -75,26 +75,45 @@ enum SegmentMerger {
             let duration: CMTime
         }
 
+        // 先挑后拷：读 duration 并不需要拷贝文件，所以先算出究竟要哪几片，
+        // 再只拷这几片。旧实现先把全部分片（600s 窗口最多 60 片、数百 MB）
+        // 逐个 copyItem 一遍，这段同步磁盘 I/O 正是点保存后卡顿/卡死的元凶。
+        struct Candidate {
+            let url: URL
+            let duration: CMTime
+        }
+        var chosen: [Candidate] = []
+        var gathered: Double = 0
+        let wanted = max(seconds, 1)
+        for segment in segments.reversed() {
+            let probe = AVURLAsset(url: segment.url)
+            // 正在写入的那一片还没有 moov，取 duration 会抛错，直接跳过
+            let duration = await AssetCompat.duration(of: probe)
+            guard duration.isValid, duration.seconds > 0.05 else { continue }
+            chosen.append(Candidate(url: segment.url, duration: duration))
+            gathered += duration.seconds
+            if gathered >= wanted { break }
+        }
+        chosen.reverse()
+        guard !chosen.isEmpty else { throw MergerError.noSegments }
+
         var items: [Item] = []
         var readFailures = 0
-        for segment in segments {
-            let asset = AVURLAsset(url: segment.url)
-            // 正在写入的那一片还没有 moov，取 duration 会抛错，直接跳过
-            let duration = await AssetCompat.duration(of: asset)
-            guard duration.isValid, duration.seconds > 0.05 else { continue }
-            let copy = workDir.appendingPathComponent(segment.url.lastPathComponent)
+        for candidate in chosen {
+            let copy = workDir.appendingPathComponent(candidate.url.lastPathComponent)
             do {
-                try FileManager.default.copyItem(at: segment.url, to: copy)
+                try FileManager.default.copyItem(at: candidate.url, to: copy)
             } catch {
                 readFailures += 1
                 continue
             }
-            items.append(Item(asset: AVURLAsset(url: copy), duration: duration))
+            items.append(Item(asset: AVURLAsset(url: copy), duration: candidate.duration))
         }
         if items.isEmpty {
-            LogBridge.local("EXP_READFAIL_\(readFailures)_OF_\(segments.count)")
-            throw MergerError.readFailed(failed: readFailures, total: segments.count)
+            LogBridge.local("EXP_READFAIL_\(readFailures)_OF_\(chosen.count)")
+            throw MergerError.readFailed(failed: readFailures, total: chosen.count)
         }
+        LogBridge.local("EXP_COPY_\(items.count)_OF_\(segments.count)_WANT_\(Int(wanted))s")
 
         // 从最新的一段往回取，直到凑满需要的秒数
         var plan: [(Item, CMTimeRange)] = []

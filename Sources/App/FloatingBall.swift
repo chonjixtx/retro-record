@@ -20,7 +20,9 @@ import UIKit
 @MainActor
 final class FloatingBallController {
     static let shared = FloatingBallController()
-    private init() {}
+    private init() {
+        observeRevive()
+    }
 
     private let ballSize: CGFloat = 68
 
@@ -139,6 +141,53 @@ final class FloatingBallController {
         }
     }
 
+    // MARK: - 消失自愈
+
+    /// 「球不见了」的自愈入口。
+    ///
+    /// 球消失的三种真实原因，都在这里兜住：
+    /// 1. App 被挂起或收到内存警告后，系统回收了覆盖窗口，而 enabled 仍是 true；
+    /// 2. 从后台回前台时 windowScene 被系统重建，旧窗口绑在失效场景上，画不出来；
+    /// 3. 球被系统弹层/状态栏区域盖住，看起来像消失了。
+    private func observeRevive() {
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            UIApplication.didBecomeActiveNotification,
+            UIApplication.willEnterForegroundNotification,
+            UIApplication.didReceiveMemoryWarningNotification
+        ]
+        for name in names {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.reviveIfNeeded() }
+            }
+        }
+    }
+
+    @MainActor
+    private func reviveIfNeeded() {
+        // 全局球由浮动 Scene 那一侧管理，这里只管 App 内小窗
+        guard enabled, !Self.overlayInBackground else { return }
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else { return }
+
+        // 窗口还挂在当前活着的场景上，且可见 —— 不用管
+        if let w = inAppWindow, !w.isHidden,
+           w.windowScene === scene, inAppBallHost?.view.isHidden == false {
+            return
+        }
+
+        // 绑在已失效的旧场景上时，旧窗口永远画不出来，必须丢掉重建
+        if let w = inAppWindow, w.windowScene !== scene {
+            inAppWindow = nil
+            inAppBallHost = nil
+        }
+
+        ensureInAppBall(in: scene)
+        inAppWindow?.isHidden = false
+        inAppBallHost?.view.isHidden = false
+    }
+
     // MARK: - 全局悬浮窗生命周期（RetroAppDelegate 通过 OverlayBridge 回调）
 
     /// 锚定 Scene 就绪（FBSystemShellInitialize 完成、浮动 Scene 已建好）。
@@ -212,7 +261,9 @@ final class FloatingBallController {
     private func ensureInAppBall(in scene: UIWindowScene) {
         if inAppWindow == nil {
             let w = PassthroughWindow(windowScene: scene)
-            w.windowLevel = .statusBar + 1
+            // 抬到状态栏之上，避免被导航栏/状态栏/HUD 这类原生层盖住而"看起来消失了"。
+            // 特意不取 .alert 层级：那样会挡在系统权限弹窗上面，用户点不到「允许」。
+            w.windowLevel = .statusBar + 100
             w.backgroundColor = .clear
             w.isOpaque = false
             let vc = UIViewController()

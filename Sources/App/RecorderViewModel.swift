@@ -263,23 +263,46 @@ final class RecorderViewModel: ObservableObject {
         let seconds = retentionSeconds
         let quality = exportQuality
 
-        Task {
+        // 关键修复：Swift 5 并发模式下 nonisolated async 函数会继承调用方的
+        // actor 上下文。这里若写 Task { }，整段「拷贝分片 + 建 composition +
+        // 导出」都会跑在主线程 —— 表现就是点保存后界面卡死。
+        // Task.detached 强制脱离 MainActor，UI 更新再切回主线程。
+        Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let url = try await SegmentMerger.exportLast(seconds: seconds, quality: quality)
-                savedFiles.insert(url, at: 0)
-                ExportStore.prune()
-                notice = Notice(text: "已保存最近 \(Int(seconds)) 秒，同时存入相册", isError: false)
-                do {
-                    try await PhotoSaver.save(videoAt: url)
-                } catch {
-                    notice = Notice(text: "视频已保存到 App 内，存入相册失败：\(error.localizedDescription)", isError: true)
-                }
+                await self?.finishExport(url: url, seconds: seconds)
             } catch {
-                notice = Notice(text: error.localizedDescription, isError: true)
+                await self?.failExport(error)
             }
-            isExporting = false
-            exportProgress = nil
         }
+    }
+
+    @MainActor
+    private func finishExport(url: URL, seconds: Double) {
+        savedFiles.insert(url, at: 0)
+        ExportStore.prune()
+        isExporting = false
+        exportProgress = nil
+        notice = Notice(text: "已保存最近 \(Int(seconds)) 秒，同时存入相册", isError: false)
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                try await PhotoSaver.save(videoAt: url)
+            } catch {
+                await self?.failPhoto(error)
+            }
+        }
+    }
+
+    @MainActor
+    private func failExport(_ error: Error) {
+        isExporting = false
+        exportProgress = nil
+        notice = Notice(text: error.localizedDescription, isError: true)
+    }
+
+    @MainActor
+    private func failPhoto(_ error: Error) {
+        notice = Notice(text: "视频已保存到 App 内，存入相册失败：\(error.localizedDescription)", isError: true)
     }
 
     func open(_ url: URL) {
