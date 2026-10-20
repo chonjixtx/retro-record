@@ -13,6 +13,9 @@ settings:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_BITCODE: NO
+    # Xcode 15+ 默认开启「用户脚本沙盒」，会禁掉 build phase 脚本的网络与越界写入，
+    # 导致顺带编译 tweak 的脚本拿不到 ldid。这里显式关掉。
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
     GENERATE_INFOPLIST_FILE: NO
     ALWAYS_SEARCH_USER_PATHS: NO
     CLANG_ENABLE_MODULES: YES
@@ -65,6 +68,13 @@ targets:
           - "$(SRCROOT)/PrivateFrameworks/FrontBoard.tbd"
           - "$(SRCROOT)/PrivateFrameworks/FrontBoardServices.tbd"
           - "$(SRCROOT)/PrivateFrameworks/RunningBoardServices.tbd"
+    # 借 macOS 构建机顺带编译越狱 tweak（游戏内保存按钮）并打成 deb。
+    # 脚本全程 set +e 且结尾 exit 0，无论成功失败都不会影响 IPA 产出。
+    postBuildScripts:
+      - path: tools/build_tweak.sh
+        name: "Build RetroSaveInGame tweak (deb)"
+        basedOnDependencyAnalysis: false
+        showEnvVarsInLog: false
 
   RecorderExtension:
     type: app-extension

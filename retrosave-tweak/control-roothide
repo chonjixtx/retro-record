@@ -1,0 +1,8 @@
+Package: com.retro.saveingame
+Name: RetroSaveInGame
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: 游戏进程内绘制「回溯」悬浮按钮，点一下即保存最近 30/60/120 秒录像。不修改游戏任何数据。
+Maintainer: retro
+Author: retro
+Section: Tweaks
