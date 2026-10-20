@@ -86,19 +86,12 @@ static void RRPostRes(void) {
 
 /* ---------- 确认录制进程收到了没有 ---------- */
 
-static BOOL g_triggerAck = NO;   // 扩展收到了指令
-static BOOL g_saveDone = NO;     // 扩展已经写进相册
+static BOOL g_triggerAck = NO;
 static BOOL g_ackOn = NO;
 
-/* 默认不再跳转主 App。用户明确要求：游戏里点保存就该在游戏里完成，不要切出去。
-   兜底交给「录制结束时自动保存」—— 就算这条指令丢了，停录屏那一刻已录内容照样进相册，
-   不会白录。真要看 App 诊断时再手动打开即可。 */
-#define RR_JUMP_TO_APP_ON_FAIL 0
-
-/* 扩展收到 trigger 后会立刻广播 TRIG_SAVE_<秒数>，写进相册后再广播
-   PHOTO_OK / PARTS_OK / EXP_OK / KEEP_OK。这两条信号决定了该弹什么提示：
-   TRIG_SAVE  = 指令送到了，还在处理
-   PHOTO_OK…  = 真的保存好了 —— 只有这一步才能弹「已保存」 */
+/* 扩展收到 trigger 后会立刻广播一条 TRIG_SAVE_<秒数> 日志。
+   Darwin 通知在扩展侧偶发收不到（或被系统杀进程），这条回执是唯一能当场判断
+   「指令到底有没有送达」的信号 —— 拿不到就直接拉起主 App 兜底，绝不静默失败。 */
 static void RRAckCallback(CFNotificationCenterRef center, void *observer,
                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     if (!name) return;
@@ -106,15 +99,10 @@ static void RRAckCallback(CFNotificationCenterRef center, void *observer,
     if (![n hasPrefix:RR_LOG_PREFIX]) return;
     NSString *body = [n substringFromIndex:[RR_LOG_PREFIX length]];
     if ([body hasPrefix:@"TRIG_SAVE"]) g_triggerAck = YES;
-    if ([body hasPrefix:@"PHOTO_OK"] ||
-        [body hasPrefix:@"PARTS_OK"] ||
-        [body hasPrefix:@"EXP_OK"] ||
-        [body hasPrefix:@"KEEP_OK"]) g_saveDone = YES;
 }
 
 static void RRAckWatchBegin(void) {
     g_triggerAck = NO;
-    g_saveDone = NO;
     if (g_ackOn) return;
     g_ackOn = YES;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
@@ -174,10 +162,40 @@ static void RRToast(NSString *text) {
     [w addSubview:lb];
     [w bringSubviewToFront:lb];
     [UIView animateWithDuration:0.18 animations:^{ lb.alpha = 1; } completion:^(BOOL f) {
-        // 提示停留久一点：保存结果用户在打游戏，1 秒很容易错过
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [UIView animateWithDuration:0.2 animations:^{ lb.alpha = 0; } completion:^(BOOL f2) {
+                [lb removeFromSuperview];
+            }];
+        });
+    }];
+}
+
+/* 屏幕正中央的结果提示：不切走游戏、不弹需要点「确定」的对话框 */
+static void RRCenterToast(NSString *text, BOOL ok) {
+    UIWindow *w = RRKeyWindow();
+    if (!w) return;
+    UILabel *lb = [[UILabel alloc] init];
+    lb.text = text;
+    lb.textColor = [UIColor whiteColor];
+    lb.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
+    lb.textAlignment = NSTextAlignmentCenter;
+    lb.numberOfLines = 2;
+    lb.backgroundColor = ok ? [[UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92]
+                              : [[UIColor blackColor] colorWithAlphaComponent:0.85]];
+    lb.layer.cornerRadius = 12;
+    lb.layer.masksToBounds = YES;
+    lb.userInteractionEnabled = NO;
+    lb.alpha = 0;
+    CGFloat wd = 240, ht = 62;
+    lb.frame = CGRectMake((w.bounds.size.width - wd) / 2,
+                          (w.bounds.size.height - ht) / 2, wd, ht);
+    [w addSubview:lb];
+    [w bringSubviewToFront:lb];
+    [UIView animateWithDuration:0.16 animations:^{ lb.alpha = 1; } completion:^(BOOL f) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [UIView animateWithDuration:0.25 animations:^{ lb.alpha = 0; } completion:^(BOOL f2) {
                 [lb removeFromSuperview];
             }];
         });
@@ -428,44 +446,23 @@ static void RRRefreshPanel(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ RRPostTrigger(); });
 
-    RRSetStatus([NSString stringWithFormat:@"正在保存最近 %ld 秒…", (long)sec]);
     [UIView animateWithDuration:0.09 animations:^{
         g_btn.transform = CGAffineTransformMakeScale(1.18, 1.18);
     } completion:^(BOOL f) {
         [UIView animateWithDuration:0.09 animations:^{ g_btn.transform = CGAffineTransformIdentity; }];
     }];
 
-    // 分两次确认：3 秒先看指令送没送到，8 秒再看有没有真的写进相册。
-    // 全程留在游戏里，不弹系统确认框、不切 App。
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+    // 不再跳转到主 App：跳走会打断游戏，用户要的是「点了就地给个结果」。
+    // 1.8 秒后按回执在屏幕中间显示结论：收到回执 = 已保存；没收到 = 提示没在录。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (g_saveDone) {
-            RRSetStatus([NSString stringWithFormat:@"已保存最近 %ld 秒，去相册查看", (long)sec]);
-        } else if (g_triggerAck) {
-            RRSetStatus([NSString stringWithFormat:@"录制进程已收到，正在保存 %ld 秒", (long)sec]);
-        }
-    });
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        BOOL done = g_saveDone;
         BOOL got = g_triggerAck;
         RRAckWatchEnd();
-        if (done) {
-            RRSetStatus([NSString stringWithFormat:@"已保存最近 %ld 秒，去相册查看", (long)sec]);
-            return;
-        }
         if (got) {
-            RRSetStatus([NSString stringWithFormat:@"录制进程正在保存 %ld 秒，稍等几秒看相册", (long)sec]);
-            return;
+            RRCenterToast([NSString stringWithFormat:@"已保存\n最近 %ld 秒", (long)sec], YES);
+        } else {
+            RRCenterToast(@"没在录\n先在面板①里开启录屏", NO);
         }
-#if RR_JUMP_TO_APP_ON_FAIL
-        RRFallbackToApp(sec);
-        RRSetStatus(@"未检测到录制进程，已切到「回溯」保存");
-#else
-        // 不跳转：停录屏时扩展会自动把已录内容存进相册，素材不会丢
-        RRSetStatus(@"未检测到录制进程，请确认已在录屏（停录屏时会自动补存）");
-#endif
     });
 }
 
