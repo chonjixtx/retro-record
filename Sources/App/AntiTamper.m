@@ -10,5 +10,8 @@
 //
 // 反调试 / 反重签 / 沙盒检测一并停用：这套检查只在「防外人破解」时有意义，
 // 对自用工具只有副作用。历史版本见 git（文件曾含四道完整检查）。
+@interface RetroAntiTamper : NSObject
+@end
+
 @implementation RetroAntiTamper
 @end
