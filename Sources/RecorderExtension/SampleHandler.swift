@@ -38,6 +38,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var pingObservation: NotifyBridge.Observation?
     private var triggerObservation: NotifyBridge.Observation?
     private var bitrateObservation: NotifyBridge.Observation?
+    private var resObservation: NotifyBridge.Observation?
 
     // MARK: - 生命周期
 
@@ -64,6 +65,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         registerPingObserver()
         registerTriggerObserver()
         registerBitrateObserver()
+        registerResObserver()
     }
 
     override func broadcastPaused() {
@@ -102,6 +104,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
         if let observation = bitrateObservation {
             NotifyBridge.unobserve(observation)
             bitrateObservation = nil
+        }
+        if let observation = resObservation {
+            NotifyBridge.unobserve(observation)
+            resObservation = nil
         }
 
         // 保底路径：录制一结束就把已有的分片存进相册，不依赖任何跨进程通信。
@@ -212,9 +218,19 @@ final class SampleHandler: RPBroadcastSampleHandler {
             return segmentFail("noformat")
         }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format)
-        let width = Int(dimensions.width)
-        let height = Int(dimensions.height)
+        var width = Int(dimensions.width)
+        var height = Int(dimensions.height)
         guard width > 0, height > 0 else { return segmentFail("badwh") }
+
+        // 分辨率上限：只向下缩（横屏时高度可能是短边，按长边比较更稳）
+        if config.resolutionCapHeight > 0 {
+            let longEdge = max(width, height)
+            if longEdge > config.resolutionCapHeight {
+                let scale = Double(config.resolutionCapHeight) / Double(longEdge)
+                width = max((Int(Double(width) * scale) / 2) * 2, 2)
+                height = max((Int(Double(height) * scale) / 2) * 2, 2)
+            }
+        }
         guard let output = SegmentStore.nextURL() else { return segmentFail("nourl") }
         try? FileManager.default.removeItem(at: output)
         guard let newWriter = try? AVAssetWriter(url: output, fileType: .mp4) else {
@@ -429,6 +445,19 @@ final class SampleHandler: RPBroadcastSampleHandler {
             self.config.bitrateMbps = value
             RecorderConfigStore.save(self.config)
             NotifyBridge.postLog("BITRATE_\(Int(value))")
+            self.rotateSegment(force: true)
+        }
+    }
+
+    /// 游戏内悬浮窗面板直接改输出分辨率上限（0 = 原画质）。
+    /// 只能向下缩：ReplayKit 给的源分辨率就是上限，选更高不会放大。
+    private func registerResObserver() {
+        resObservation = NotifyBridge.observeResCap { [weak self] height in
+            guard let self else { return }
+            let value = max(Int(height), 0)
+            self.config.resolutionCapHeight = value
+            RecorderConfigStore.save(self.config)
+            NotifyBridge.postLog(value == 0 ? "RES_native" : "RES_\(value)p")
             self.rotateSegment(force: true)
         }
     }

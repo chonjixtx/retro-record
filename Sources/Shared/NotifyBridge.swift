@@ -26,6 +26,10 @@ public enum NotifyBridge {
     /// 与 configPrefix 的区别 —— config 只同步保留时长（主 App → 扩展）；
     /// bitrate 允许任意外部进程改，且扩展收到后立刻切一段新分片让新码率马上生效。
     public static let bitratePrefix = "com.retro.recorder.bitrate."
+    /// 游戏内悬浮窗面板直接改输出分辨率上限（高度像素，0 = 原画质）：
+    /// 外部进程 → 录制扩展，收到后立刻切一段新分片让新分辨率生效。
+    /// 注意只能向下缩，源不足时仍输出源分辨率（放大没有意义）。
+    public static let resPrefix = "com.retro.recorder.res."
 
     /// 录制扩展打开：日志除广播外再落一份到共享目录，主 App 事后可读。
     /// 主 App 保持 false，避免把自己的日志也混进同一个文件。
@@ -68,6 +72,11 @@ public enum NotifyBridge {
     /// 外部进程请求「把码率改成 mbps」。由录制扩展接收，下一段分片生效
     public static func postBitrate(mbps: Int) {
         post(name: bitratePrefix + String(min(max(mbps, 1), 20)))
+    }
+
+    /// 外部进程请求「输出分辨率上限改为 heightPx（0 = 原画质）」
+    public static func postResCap(heightPx: Int) {
+        post(name: resPrefix + String(max(heightPx, 0)))
     }
 
     /// 任意一侧广播一条日志。字符会被规整成通知名能接受的形态
@@ -132,6 +141,12 @@ public enum NotifyBridge {
     public static func observeBitrate(_ handler: @escaping (Double) -> Void) -> Observation {
         observe(prefix: bitratePrefix) { text in
             handler(Double(text) ?? 6)
+        }
+    }
+
+    public static func observeResCap(_ handler: @escaping (Double) -> Void) -> Observation {
+        observe(prefix: resPrefix) { text in
+            handler(Double(text) ?? 0)
         }
     }
 

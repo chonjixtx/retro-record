@@ -35,6 +35,7 @@
 #define RR_TRIGGER_PREFIX @"com.retro.recorder.trigger."
 #define RR_LOG_PREFIX @"com.retro.recorder.log."
 #define RR_BITRATE_PREFIX @"com.retro.recorder.bitrate."
+#define RR_RES_PREFIX @"com.retro.recorder.res."
 #define RR_BROADCAST_EXT @"com.retro.recorder.broadcast"
 #define RR_PANEL_W 224
 
@@ -48,6 +49,7 @@
 - (void)openApp;
 - (void)secondsChanged:(UISegmentedControl *)seg;
 - (void)bitrateChanged:(UISegmentedControl *)seg;
+- (void)resChanged:(UISegmentedControl *)seg;
 - (void)longPressed:(UILongPressGestureRecognizer *)ges;
 - (void)panned:(UIPanGestureRecognizer *)ges;
 @end
@@ -57,8 +59,10 @@ static UIView *g_panel = nil;
 static UILabel *g_status = nil;
 static UISegmentedControl *g_segSeconds = nil;
 static UISegmentedControl *g_segBitrate = nil;
+static UISegmentedControl *g_segRes = nil;
 static NSInteger g_seconds = 60;
 static NSInteger g_bitrate = 6;
+static NSInteger g_res = 0;   // 输出高度上限（0 = 原画质）
 static BOOL g_pollInstalled = NO;
 
 /* ---------- 指令发送 ---------- */
@@ -74,6 +78,10 @@ static void RRPostTrigger(void) {
 
 static void RRPostBitrate(void) {
     RRPost([RR_BITRATE_PREFIX stringByAppendingFormat:@"%ld", (long)g_bitrate]);
+}
+
+static void RRPostRes(void) {
+    RRPost([RR_RES_PREFIX stringByAppendingFormat:@"%ld", (long)g_res]);
 }
 
 /* ---------- 确认录制进程收到了没有 ---------- */
@@ -180,6 +188,7 @@ static void RRSavePrefs(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     [ud setInteger:g_seconds forKey:@"RetroSaveSeconds"];
     [ud setInteger:g_bitrate forKey:@"RetroSaveBitrate"];
+    [ud setInteger:g_res forKey:@"RetroSaveRes"];
     [ud synchronize];
 }
 
@@ -332,8 +341,26 @@ static void RRBuildPanel(void) {
     [g_segBitrate setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
                                 forState:UIControlStateNormal];
     [g_segBitrate addTarget:[RRActions shared] action:@selector(bitrateChanged:)
-             forControlEvents:UIControlEventValueChanged];
+            forControlEvents:UIControlEventValueChanged];
     [p addSubview:g_segBitrate];
+    y += 32;
+
+    // 5) 画质档位（输出分辨率上限，只向下缩；原生 = 跟随系统给的帧）
+    UILabel *l5 = [[UILabel alloc] initWithFrame:CGRectMake(pad, y, 60, 16)];
+    l5.text = @"⑤ 画质";
+    l5.textColor = [UIColor colorWithWhite:1 alpha:0.82];
+    l5.font = [UIFont systemFontOfSize:11.5];
+    [p addSubview:l5];
+    g_segRes = [[UISegmentedControl alloc] initWithItems:@[@"1080p", @"2K", @"4K", @"原生"]];
+    g_segRes.frame = CGRectMake(pad + 46, y - 2, pw - pad - 58, 24);
+    g_segRes.selectedSegmentTintColor = [UIColor colorWithWhite:1 alpha:0.9];
+    [g_segRes setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor blackColor]}
+                           forState:UIControlStateSelected];
+    [g_segRes setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+                           forState:UIControlStateNormal];
+    [g_segRes addTarget:[RRActions shared] action:@selector(resChanged:)
+          forControlEvents:UIControlEventValueChanged];
+    [p addSubview:g_segRes];
     y += 32;
 
     // 状态行
@@ -361,6 +388,9 @@ static void RRRefreshPanel(void) {
     NSArray *brs = @[@4, @6, @8, @12];
     NSUInteger bi = [brs indexOfObject:@(g_bitrate)];
     g_segBitrate.selectedSegmentIndex = (bi == NSNotFound) ? 1 : bi;
+    NSArray *resVals = @[@1080, @1440, @2160, @0];
+    NSUInteger ri = [resVals indexOfObject:@(g_res)];
+    g_segRes.selectedSegmentIndex = (ri == NSNotFound) ? 3 : ri;
 }
 
 /* ---------- 动作目标 ---------- */
@@ -455,6 +485,17 @@ static void RRRefreshPanel(void) {
     }
 }
 
+- (void)resChanged:(UISegmentedControl *)seg {
+    NSArray *vals = @[@1080, @1440, @2160, @0];
+    if (seg.selectedSegmentIndex < (NSInteger)vals.count) {
+        g_res = [vals[seg.selectedSegmentIndex] integerValue];
+        RRSavePrefs();
+        RRPostRes();         // 扩展收到后立刻切一段新分片生效
+        RRSetStatus(g_res == 0 ? @"画质：原画质（跟随系统）"
+                               : [NSString stringWithFormat:@"画质上限 %ldp，下一段生效（只能向下缩）", (long)g_res]);
+    }
+}
+
 - (void)longPressed:(UILongPressGestureRecognizer *)ges {
     if (ges.state != UIGestureRecognizerStateBegan) return;
     [self tapped];   // 长按 = 立刻保存，不用展开面板
@@ -508,6 +549,8 @@ static void RRAttach(void) {
         if (savedSec > 0) g_seconds = savedSec;
         NSInteger savedBr = [ud integerForKey:@"RetroSaveBitrate"];
         if (savedBr > 0) g_bitrate = savedBr;
+        NSInteger savedRes = [ud integerForKey:@"RetroSaveRes"];
+        if (savedRes >= 0 && [ud objectForKey:@"RetroSaveRes"] != nil) g_res = savedRes;
         RRUpdateTitle();
 
         [g_btn addTarget:[RRActions shared] action:@selector(togglePanel)
@@ -531,6 +574,17 @@ static void RRAttach(void) {
     if (!g_panel) {
         RRBuildPanel();
         RRRefreshPanel();
+        // 面板首次挂载时把手上的时长/码率/画质同步给扩展一次：
+        // 面板的值存在游戏进程的 NSUserDefaults，扩展的配置在共享目录，两者可能不同步
+        static BOOL g_synced = NO;
+        if (!g_synced) {
+            g_synced = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                RRPostBitrate();
+                RRPostRes();
+            });
+        }
     }
 
     if (g_btn.window == w && g_btn.superview == w) {
