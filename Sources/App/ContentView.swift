@@ -110,12 +110,9 @@ struct ContentView: View {
             // 录屏一开始挂上常驻通知；停止要延时确认再撤，避免 isCaptured 闪 false 误删
             model.handleCaptureChanged(capturing)
         }
-        .onOpenURL { url in
-            if url.host == "save" || url.absoluteString.contains("save") {
-                model.refresh()
-                model.saveRetro()
-            }
-        }
+        // deep link（retrorecord://save）统一由 RetroRecordApp.handleDeepLink 处理。
+        // 这里不能再挂一份 onOpenURL —— SwiftUI 里每个 onOpenURL 都会收到同一个 URL，
+        // 之前两处都接，导致一次跳转触发两次 saveRetro，两路导出并发抢同一批分片文件。
         .alert(item: Binding(
             get: { model.notice },
             set: { model.notice = $0 }
