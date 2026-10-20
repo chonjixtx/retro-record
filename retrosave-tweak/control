@@ -1,0 +1,9 @@
+Package: com.retro.saveingame
+Name: RetroSaveInGame
+Version: 1.0-1
+Architecture: iphoneos-arm
+Description: 游戏内回溯保存悬浮按钮（自用）
+Maintainer: self
+Author: self
+Section: Tweaks
+Depends: mobilesubstrate
