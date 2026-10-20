@@ -86,34 +86,68 @@ static void RRPostRes(void) {
 
 /* ---------- 确认录制进程收到了没有 ---------- */
 
-static BOOL g_triggerAck = NO;
-static BOOL g_ackOn = NO;
+/* 扩展侧新增的一组「固定名字」回执。
+   必须用固定名：iOS 的 Darwin 通知中心对 name = NULL 的通配注册经常一条都不投递，
+   而 log 前缀后面跟的是自由文本（TRIG_SAVE_60 …），根本没法枚举注册 ——
+   这就是之前一直误判「没在录」的根因。 */
+#define RR_ACK_PREFIX  @"com.retro.recorder.ack."
+#define RR_ACK_TRIG    @"com.retro.recorder.ack.trig"
+#define RR_ACK_PING    @"com.retro.recorder.ack.ping"
+#define RR_ACK_DONE    @"com.retro.recorder.ack.done"
+#define RR_ACK_FAIL    @"com.retro.recorder.ack.fail"
+#define RR_PING_PREFIX @"com.retro.recorder.ping."
 
-/* 扩展收到 trigger 后会立刻广播一条 TRIG_SAVE_<秒数> 日志。
-   Darwin 通知在扩展侧偶发收不到（或被系统杀进程），这条回执是唯一能当场判断
-   「指令到底有没有送达」的信号 —— 拿不到就直接拉起主 App 兜底，绝不静默失败。 */
+static BOOL g_ackTrig = NO;   /* 扩展收到了保存指令 */
+static BOOL g_ackPing = NO;   /* 扩展活着 */
+static BOOL g_ackDone = NO;   /* 已写入相册 */
+static BOOL g_ackFail = NO;   /* 写入失败 */
+static BOOL g_ackOn = NO;
+static int  g_ackToken = 0;   /* 非空 observer 句柄：CF 对 NULL observer 的处理不可靠 */
+
 static void RRAckCallback(CFNotificationCenterRef center, void *observer,
                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     if (!name) return;
     NSString *n = (__bridge NSString *)name;
-    if (![n hasPrefix:RR_LOG_PREFIX]) return;
-    NSString *body = [n substringFromIndex:[RR_LOG_PREFIX length]];
-    if ([body hasPrefix:@"TRIG_SAVE"]) g_triggerAck = YES;
+    if ([n isEqualToString:RR_ACK_TRIG])      g_ackTrig = YES;
+    else if ([n isEqualToString:RR_ACK_PING]) g_ackPing = YES;
+    else if ([n isEqualToString:RR_ACK_DONE]) g_ackDone = YES;
+    else if ([n isEqualToString:RR_ACK_FAIL]) g_ackFail = YES;
+    else if ([n hasPrefix:RR_LOG_PREFIX]) {
+        /* 老协议兼容：万一通配还能用，日志里的 TRIG_SAVE 也算数 */
+        NSString *body = [n substringFromIndex:[RR_LOG_PREFIX length]];
+        if ([body hasPrefix:@"TRIG_SAVE"]) g_ackTrig = YES;
+    }
 }
 
+/* 四个固定回执名逐个注册（保证收得到），再挂一个通配收老格式日志（可能无效，无害）。 */
 static void RRAckWatchBegin(void) {
-    g_triggerAck = NO;
+    g_ackTrig = g_ackPing = g_ackDone = g_ackFail = NO;
     if (g_ackOn) return;
     g_ackOn = YES;
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-                                    RRAckCallback, NULL, NULL,
+    CFNotificationCenterRef c = CFNotificationCenterGetDarwinNotifyCenter();
+    void *obs = &g_ackToken;
+    NSString *names[4] = { RR_ACK_TRIG, RR_ACK_PING, RR_ACK_DONE, RR_ACK_FAIL };
+    for (int i = 0; i < 4; i++) {
+        CFNotificationCenterAddObserver(c, obs, RRAckCallback,
+                                        (__bridge CFStringRef)names[i], NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+    }
+    CFNotificationCenterAddObserver(c, obs, RRAckCallback, NULL, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 }
 
 static void RRAckWatchEnd(void) {
     if (!g_ackOn) return;
     g_ackOn = NO;
-    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, NULL, NULL);
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       &g_ackToken, NULL, NULL);
+}
+
+/* 探活：两个固定名交替，避免 notifyd 把连续两次同名通知合并 */
+static void RRPostPing(void) {
+    static BOOL toggle = NO;
+    toggle = !toggle;
+    RRPost([RR_PING_PREFIX stringByAppendingString:(toggle ? @"a" : @"b")]);
 }
 
 static void RRFallbackToApp(NSInteger seconds) {
@@ -171,8 +205,9 @@ static void RRToast(NSString *text) {
     }];
 }
 
-/* 屏幕正中央的结果提示：不切走游戏、不弹需要点「确定」的对话框 */
-static void RRCenterToast(NSString *text, BOOL ok) {
+/* 屏幕正中央的结果提示：不切走游戏、不弹需要点「确定」的对话框。
+   style: 0 = 成功（绿） 1 = 失败（黑） 2 = 警告（橙） */
+static void RRCenterToast(NSString *text, NSInteger style) {
     UIWindow *w = RRKeyWindow();
     if (!w) return;
     UILabel *lb = [[UILabel alloc] init];
@@ -181,8 +216,13 @@ static void RRCenterToast(NSString *text, BOOL ok) {
     lb.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
     lb.textAlignment = NSTextAlignmentCenter;
     lb.numberOfLines = 2;
-    lb.backgroundColor = ok ? [UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92]
-                            : [[UIColor blackColor] colorWithAlphaComponent:0.85];
+    UIColor *bg = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+    if (style == 0) {
+        bg = [UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92];
+    } else if (style == 2) {
+        bg = [UIColor colorWithRed:0.85 green:0.52 blue:0.10 alpha:0.92];
+    }
+    lb.backgroundColor = bg;
     lb.layer.cornerRadius = 12;
     lb.layer.masksToBounds = YES;
     lb.userInteractionEnabled = NO;
@@ -438,13 +478,17 @@ static void RRRefreshPanel(void) {
 - (void)tapped {
     NSInteger sec = g_seconds;
 
-    // 连发三次（0 / 0.25 / 0.5 秒）：单条 Darwin 通知偶发丢失时后面两次还能补上
+    // 先探活再下指令，这样 3 秒后能区分「扩展不在」和「扩展在但指令没送到」
     RRAckWatchBegin();
+    RRPostPing();
+    // 连发三次（0 / 0.25 / 0.5 秒）：单条 Darwin 通知偶发丢失时后面两次还能补上
     RRPostTrigger();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ RRPostTrigger(); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ RRPostTrigger(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ RRPostPing(); });
 
     [UIView animateWithDuration:0.09 animations:^{
         g_btn.transform = CGAffineTransformMakeScale(1.18, 1.18);
@@ -454,14 +498,18 @@ static void RRRefreshPanel(void) {
 
     // 不再跳转到主 App：跳走会打断游戏，用户要的是「点了就地给个结果」。
     // 1.8 秒后按回执在屏幕中间显示结论：收到回执 = 已保存；没收到 = 提示没在录。
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        BOOL got = g_triggerAck;
+        BOOL trig = g_ackTrig, ping = g_ackPing, done = g_ackDone, fail = g_ackFail;
         RRAckWatchEnd();
-        if (got) {
-            RRCenterToast([NSString stringWithFormat:@"已保存\n最近 %ld 秒", (long)sec], YES);
+        if (done || trig) {
+            RRCenterToast([NSString stringWithFormat:@"已保存\n最近 %ld 秒", (long)sec], 0);
+        } else if (fail) {
+            RRCenterToast(@"保存失败\n去相册权限看看", 1);
+        } else if (ping) {
+            RRCenterToast(@"扩展在，指令没送到\n重开一次录屏", 2);
         } else {
-            RRCenterToast(@"没在录\n先在面板①里开启录屏", NO);
+            RRCenterToast(@"扩展已不在\n在面板①重新开录屏", 1);
         }
     });
 }

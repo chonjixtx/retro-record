@@ -31,6 +31,43 @@ public enum NotifyBridge {
     /// 注意只能向下缩，源不足时仍输出源分辨率（放大没有意义）。
     public static let resPrefix = "com.retro.recorder.res."
 
+    // MARK: - 固定回执（外部进程专用）
+    //
+    // 为什么需要这一组「不带参数的固定名」：
+    // 在 iOS 上，CFNotificationCenterAddObserver 对 Darwin 中心传 name = NULL
+    // （通配监听所有通知）经常一条都收不到 —— notifyd 只对「被显式注册过的完整通知名」
+    // 投递。而 logPrefix 后面跟的是自由文本（TRIG_SAVE_60、SEGS_3 …），根本无法枚举，
+    // 所以外部进程（游戏内悬浮窗）过去一直拿不到回执，只能误判成「没在录」。
+    //
+    // 解决办法：扩展额外广播三条**名字固定**的回执，外部进程按全名注册即可稳定收到。
+    public static let ackPrefix = "com.retro.recorder.ack."
+    /// 扩展收到了保存指令
+    public static let ackTrig = ackPrefix + "trig"
+    /// 扩展活着（回答 ping）
+    public static let ackPing = ackPrefix + "ping"
+    /// 分片已收尾并成功写入相册
+    public static let ackDone = ackPrefix + "done"
+    /// 写入相册失败（权限被拒 / 没有可用分片）
+    public static let ackFail = ackPrefix + "fail"
+
+    // MARK: - 显式注册用的候选名
+    //
+    // 参数只能编码在通知名里，所以按「界面上真正可能出现的档位」枚举注册：
+    // 通配不可靠，就把所有可能的全名都注册一遍。
+    public static let secondSteps = [10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 600]
+    /// 1...20 Mbps 全枚举，App 里的滑杆能出任意整数值
+    public static let bitrateSteps = Array(1...20)
+    /// 分辨率上限（高度像素），0 = 原画质
+    public static let resSteps = [0, 720, 1080, 1440, 2160]
+
+    public static var triggerNames: [String] { secondSteps.map { triggerPrefix + String($0) } }
+    public static var saveNames: [String] { secondSteps.map { savePrefix + String($0) } }
+    public static var configNames: [String] { secondSteps.map { configPrefix + String($0) } }
+    public static var bitrateNames: [String] { bitrateSteps.map { bitratePrefix + String($0) } }
+    public static var resNames: [String] { resSteps.map { resPrefix + String($0) } }
+    /// ping 用两个固定名交替，避免 notifyd 把连续两次同名通知合并掉
+    public static var pingNames: [String] { [pingPrefix + "a", pingPrefix + "b"] }
+
     /// 录制扩展打开：日志除广播外再落一份到共享目录，主 App 事后可读。
     /// 主 App 保持 false，避免把自己的日志也混进同一个文件。
     /// 见 ExtLogFile 的说明 —— 主 App 挂起期间收不到 Darwin 通知，只能靠落盘补。
@@ -58,11 +95,27 @@ public enum NotifyBridge {
         post(name: configPrefix + String(max(retentionSeconds, 10)))
     }
 
-    /// 主 App 探活：扩展如果还活着，会回 PONG + 分片数 + 相册权限
+    /// 主 App / 外部进程探活：扩展如果还活着，会回 PONG + 分片数 + 相册权限。
+    /// 两个固定名交替，保证每次 post 都是一条「新」通知
+    private static var pingToggle = false
+    private static let pingLock = NSLock()
+
     public static func postPing() {
-        let stamp = Int(Date().timeIntervalSince1970) % 100_000
-        post(name: pingPrefix + String(stamp))
+        pingLock.lock()
+        pingToggle.toggle()
+        let which = pingToggle ? "a" : "b"
+        pingLock.unlock()
+        post(name: pingPrefix + which)
     }
+
+    /// 扩展回执：已收到保存指令
+    public static func postAckTrig() { post(name: ackTrig) }
+    /// 扩展回执：活着（回答 ping）
+    public static func postAckPing() { post(name: ackPing) }
+    /// 扩展回执：已写入相册
+    public static func postAckDone() { post(name: ackDone) }
+    /// 扩展回执：写入失败
+    public static func postAckFail() { post(name: ackFail) }
 
     /// 外部进程请求「导出最近 seconds 秒」。由录制扩展接收并执行
     public static func postTrigger(seconds: Int) {
@@ -111,42 +164,60 @@ public enum NotifyBridge {
     private static var boxes: [LogBox] = []
 
     public static func observeLog(_ handler: @escaping (String) -> Void) -> Observation {
+        // 日志正文是自由文本，枚举不出来，只能靠通配。
+        // 主 App 还有一份落盘日志兜底，所以这里收不到也不致命。
         observe(prefix: logPrefix) { handler($0) }
     }
 
     public static func observeSave(_ handler: @escaping (Double) -> Void) -> Observation {
-        observe(prefix: savePrefix) { text in
+        observe(prefix: savePrefix, explicit: saveNames) { text in
             handler(Double(text) ?? 600)
         }
     }
 
     public static func observeConfig(_ handler: @escaping (Double) -> Void) -> Observation {
-        observe(prefix: configPrefix) { text in
+        observe(prefix: configPrefix, explicit: configNames) { text in
             handler(Double(text) ?? 600)
         }
     }
 
     public static func observePing(_ handler: @escaping () -> Void) -> Observation {
-        observe(prefix: pingPrefix) { _ in
+        observe(prefix: pingPrefix, explicit: pingNames) { _ in
             handler()
         }
     }
 
     public static func observeTrigger(_ handler: @escaping (Double) -> Void) -> Observation {
-        observe(prefix: triggerPrefix) { text in
+        observe(prefix: triggerPrefix, explicit: triggerNames) { text in
             handler(Double(text) ?? 60)
         }
     }
 
     public static func observeBitrate(_ handler: @escaping (Double) -> Void) -> Observation {
-        observe(prefix: bitratePrefix) { text in
+        observe(prefix: bitratePrefix, explicit: bitrateNames) { text in
             handler(Double(text) ?? 6)
         }
     }
 
     public static func observeResCap(_ handler: @escaping (Double) -> Void) -> Observation {
-        observe(prefix: resPrefix) { text in
+        observe(prefix: resPrefix, explicit: resNames) { text in
             handler(Double(text) ?? 0)
+        }
+    }
+
+    /// 扩展 → 外部进程的三条固定回执。名字是固定的，直接按全名注册
+    public static func observeAck(onTrig: @escaping () -> Void,
+                                  onPing: @escaping () -> Void,
+                                  onDone: @escaping () -> Void,
+                                  onFail: @escaping () -> Void) -> Observation {
+        observe(prefix: ackPrefix, explicit: [ackTrig, ackPing, ackDone, ackFail]) { text in
+            switch text {
+            case "trig": onTrig()
+            case "ping": onPing()
+            case "done": onDone()
+            case "fail": onFail()
+            default: break
+            }
         }
     }
 
@@ -156,34 +227,48 @@ public enum NotifyBridge {
             boxes.remove(at: index)
         }
         lock.unlock()
-        CFNotificationCenterRemoveObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            Unmanaged.passUnretained(observation.box).toOpaque(),
-            nil,
-            nil
-        )
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let ptr = Unmanaged.passUnretained(observation.box).toOpaque()
+        // 每个注册过的名字都要单独摘掉，只摘通配会留下野观察者
+        for name in observation.box.names {
+            CFNotificationCenterRemoveObserver(center, ptr, CFNotificationName(name as CFString), nil)
+        }
+        CFNotificationCenterRemoveObserver(center, ptr, nil, nil)
     }
 
-    private static func observe(prefix: String, handler: @escaping (String) -> Void) -> Observation {
-        let box = LogBox(prefix: prefix, handler: handler)
+    /// 注册观察。
+    ///
+    /// - important: iOS 的 Darwin 通知中心对 name = NULL 的通配注册**经常不投递**，
+    ///   所以只要给了 explicit，就只按完整通知名逐个注册（保证收得到）；
+    ///   没给 explicit（比如自由文本的日志）才退回通配。
+    ///   两种不会同时注册 —— 同时注册会让同一次 post 触发多遍回调。
+    private static func observe(prefix: String,
+                                explicit: [String] = [],
+                                handler: @escaping (String) -> Void) -> Observation {
+        let box = LogBox(prefix: prefix, handler: handler, names: explicit)
         lock.lock()
         boxes.append(box)
         lock.unlock()
 
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            Unmanaged.passUnretained(box).toOpaque(),
-            { _, observer, name, _, _ in
-                guard let observer, let name else { return }
-                let text = name.rawValue as String
-                let box = Unmanaged<LogBox>.fromOpaque(observer).takeUnretainedValue()
-                guard text.hasPrefix(box.prefix) else { return }
-                box.handler(String(text.dropFirst(box.prefix.count)))
-            },
-            nil,
-            nil,
-            .deliverImmediately
-        )
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let ptr = Unmanaged.passUnretained(box).toOpaque()
+        let callback: CFNotificationCallback = { _, observer, name, _, _ in
+            guard let observer, let name else { return }
+            let text = name.rawValue as String
+            let box = Unmanaged<LogBox>.fromOpaque(observer).takeUnretainedValue()
+            guard text.hasPrefix(box.prefix) else { return }
+            box.handler(String(text.dropFirst(box.prefix.count)))
+        }
+
+        if explicit.isEmpty {
+            CFNotificationCenterAddObserver(center, ptr, callback, nil, nil, .deliverImmediately)
+        } else {
+            for name in explicit {
+                CFNotificationCenterAddObserver(
+                    center, ptr, callback, CFNotificationName(name as CFString), nil, .deliverImmediately
+                )
+            }
+        }
         return Observation(box: box)
     }
 }
@@ -191,10 +276,12 @@ public enum NotifyBridge {
 private final class LogBox {
     let prefix: String
     let handler: (String) -> Void
+    let names: [String]
 
-    init(prefix: String, handler: @escaping (String) -> Void) {
+    init(prefix: String, handler: @escaping (String) -> Void, names: [String]) {
         self.prefix = prefix
         self.handler = handler
+        self.names = names
     }
 }
 

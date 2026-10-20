@@ -354,6 +354,8 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private func registerPingObserver() {
         pingObservation = NotifyBridge.observePing { [weak self] in
             guard let self else { return }
+            // 固定名回执：外部进程靠这条判断「扩展还活着」
+            NotifyBridge.postAckPing()
             NotifyBridge.postLog("PONG_\(AppGroup.isShared ? "shared" : "degraded")")
             NotifyBridge.postLog("SEGS_\(Self.segmentCount())")
             NotifyBridge.postLog("AUTH_\(Self.photoAuthTag())")
@@ -430,6 +432,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
             guard let self else { return }
             let target = max(seconds, 5)
             NotifyBridge.postLog("TRIG_SAVE_\(Int(target))")
+            // 固定名回执：先回一条「指令已收到」，让悬浮窗能区分
+            // 「扩展活着但没送到」和「扩展根本不在」这两种情况
+            NotifyBridge.postAckTrig()
             self.stateLock.lock()
             self.pendingSaveSeconds = target
             self.stateLock.unlock()
@@ -550,6 +555,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         NotifyBridge.postLog("PICK_\(picked.count)_of_\(files.count)")
         guard !picked.isEmpty else {
             NotifyBridge.postLog("SAVE_FAIL_nopick")
+            NotifyBridge.postAckFail()
             return
         }
         export(picked: picked, completion: nil)
@@ -638,6 +644,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 // 扩展进程拿不到相册权限（iOS 上扩展里弹不出授权框是最常见原因）。
                 // 这时不能把 mp4 当临时文件删掉 —— 先留一份，用户至少还有东西可拿。
                 NotifyBridge.postLog("PHOTO_AUTH_NO")
+                NotifyBridge.postAckFail()
                 self.keepCopy(of: url)
                 cleanup()
                 done(false)
@@ -648,9 +655,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
             } completionHandler: { success, error in
                 if success {
                     NotifyBridge.postLog("PHOTO_OK")
+                    // 固定名回执：游戏内悬浮窗靠这条显示「已保存」
+                    NotifyBridge.postAckDone()
                 } else {
                     let ns = error as NSError?
                     NotifyBridge.postLog("PHOTO_FAIL_\(ns?.code ?? -1)")
+                    NotifyBridge.postAckFail()
                     self.keepCopy(of: url)
                 }
                 cleanup()
