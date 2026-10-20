@@ -38,6 +38,20 @@
 #define RR_BROADCAST_EXT @"com.retro.recorder.broadcast"
 #define RR_PANEL_W 224
 
+/* 动作目标必须先声明：RRBuildPanel 在 @implementation 之前就要用到 [RRActions shared]，
+   Objective-C 不允许对还没声明的类发消息（会报 Use of undeclared identifier）。 */
+@interface RRActions : NSObject
++ (instancetype)shared;
+- (void)tapped;
+- (void)togglePanel;
+- (void)closePanel;
+- (void)openApp;
+- (void)secondsChanged:(UISegmentedControl *)seg;
+- (void)bitrateChanged:(UISegmentedControl *)seg;
+- (void)longPressed:(UILongPressGestureRecognizer *)ges;
+- (void)panned:(UIPanGestureRecognizer *)ges;
+@end
+
 static UIButton *g_btn = nil;
 static UIView *g_panel = nil;
 static UILabel *g_status = nil;
@@ -350,10 +364,6 @@ static void RRRefreshPanel(void) {
 }
 
 /* ---------- 动作目标 ---------- */
-
-@interface RRActions : NSObject
-+ (instancetype)shared;
-@end
 
 @implementation RRActions
 

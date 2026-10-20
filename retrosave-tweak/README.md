@@ -1,160 +1,97 @@
-# RetroSaveInGame —— 游戏内「回溯」保存悬浮按钮
+# RetroSaveInGame —— 游戏内悬浮窗（v2）
 
-## ⚠️ 先读这段
+在球球大作战进程里画一个悬浮球 + 控制面板，用来**开启录屏、保存回放、调时长、调码率**。
 
-- **只建议自用，不要分发。** 分发给他人会把法律风险从"几乎为零"拉到"实打实"。
-- **封号风险是确定的，不是"可能"。** 手游用户协议普遍禁止注入第三方代码；反作弊
-  检测看的是「进程里有没有非系统动态库」，**不会因为你只是加了个按钮就放过**。
-  越狱状态本身也会被风控标记。账号被封与本项目无关，请自行权衡。
-- 本 tweak **不 hook 任何游戏方法、不读写游戏内存、不修改游戏数据**，
-  只往游戏当前的 keyWindow 上加一颗按钮，点一下通过 Darwin 通知告诉「回溯」去保存。
+不 hook 任何游戏方法、不读写游戏内存、不修改游戏任何逻辑与数据。
 
-## 工作原理
+> ### 风险提示（必读）
+> - 注入必然违反球球大作战的用户协议。反作弊扫的是「进程里有没有非系统动态库」，
+>   **不会因为只画了个界面就放过**；越狱状态本身也会被风控标记。
+> - 只建议自用，不要分发。
 
-游戏内按钮 → Darwin 通知 `com.retro.recorder.trigger.<秒数>` → 回溯的录制扩展
-（录制期间必定存活）→ 收尾分片 → 导出 → 存相册。**游戏不会被切走。**
+---
 
-两个关键设计点：
+## 一、它能做什么 / 不能做什么
 
-1. **不用 URL scheme**：打开 `retrorecord://save` 会把游戏切到后台。Darwin 通知不会。
-2. **指令不能发给主 App**：打游戏时主 App 已被系统挂起，Darwin 通知唤不醒挂起进程。
-   所以指令发给录制扩展。
-
-需要回溯 **build22 或更高**（内置 trigger 通道），旧版本收不到指令。
-
-## 注入目标
-
-`RetroSaveInGame.plist` 里的 Bundle ID 已通过 App Store 官方接口确认为
-**`com.juzi.balls`**（球球大作战 / Battle of Balls，巨人网络）。
-
-如果要换成别的游戏，改这一行即可：
-
-```
-{ Filter = { Bundles = ( "com.juzi.balls" ); }; }
-```
-
-查询任意 App 的 Bundle ID（不需要越狱）：
-
-```
-https://itunes.apple.com/lookup?id=<App Store 数字 ID>&country=cn     →  看 bundleId 字段
-```
-
-## 前置条件
-
-1. 设备已越狱（rootless：dopamine / palera1n；roothide：Dopamine roothide 等）
-2. 已装回溯 build22+，能正常录屏
-3. 已装 Substitute/ElleKit 注入框架（越狱自带）
-
-## 产物说明
-
-| 文件 | 用在哪 |
+| 功能 | 在哪完成 |
 |---|---|
-| `RetroSaveInGame-rootless.deb` | dopamine / palera1n rootless —— data.tar 里路径带 `var/jb/` 前缀 |
-| `RetroSaveInGame-roothide.deb` | roothide —— 路径不带前缀，dpkg 会自动重定位到随机 jbroot |
-| `RetroSaveInGame.dylib` | 兜底用：手动塞进注入目录（见下） |
+| 开启录屏（弹系统「开始直播」，你手动确认） | ✅ 游戏内悬浮窗 |
+| 保存最近 30 / 60 / 120 秒 | ✅ 游戏内悬浮窗 |
+| 调时长档位 | ✅ 游戏内悬浮窗 |
+| 调码率 4 / 6 / 8 / 12 Mbps | ✅ 游戏内悬浮窗（下一段分片生效） |
+| 真正的采帧 / 分片 / 拼接 / 写相册 | ❌ 必须由「回溯」App 的 Broadcast Upload Extension 提供 |
 
-dylib 为 **arm64 + arm64e 双架构 fat**，已做 ad-hoc 签名。
+**录屏内核挪不进 dylib** —— iOS 的 ReplayKit 录屏能力由 Broadcast Upload Extension 提供，
+它必须寄生在一个 App 包体里，由系统注册。这是 iOS 的组织方式，越狱也改不了。
 
-## 安装
+所以存在两种装法，二选一：
 
-### 方式一：装 deb（推荐）
+- **All-in-One deb（推荐）**：一个 deb 同时装上「App 本体 + 插件」，装一次搞定，
+  不用再单独传 ipa，也不用巨魔。见 `使用说明-AllinOne.md`。
+- **分开装**：ipa 用巨魔装（App 本体）+ deb 装插件。功能体验完全一样，只是多一步。
 
-把对应 deb 传到设备（Filza / scp / 隔空投送都行），然后：
+---
 
-```bash
-# 命令行
-dpkg -i RetroSaveInGame-rootless.deb     # 或 -roothide.deb
+## 二、安装（只装插件时）
 
-# 或者 Filza 里直接点开 deb → 安装
+1. 把 `RetroSaveInGame-rootless.deb`（dopamine / palera1n）或
+   `RetroSaveInGame-roothide.deb`（roothide）传到设备
+2. Sileo / Filza 打开安装
+3. `killall backboardd`（或 `sbreload`）
 
-# 让 tweak 生效
-killall backboardd      # 或 sbreload
-```
+手动装法（deb 装不上时）：把 `RetroSaveInGame.dylib` 和 `RetroSaveInGame.plist` 一起放进
+`/var/jb/Library/MobileSubstrate/DynamicLibraries/`，权限 0755 / 0644，然后 respring。
 
-确认文件真的落到了正确目录：
+---
 
-```bash
-# rootless
-ls /var/jb/Library/MobileSubstrate/DynamicLibraries/ | grep Retro
-# roothide（jbroot 路径随机，用 Sileo/Filza 的越狱根目录进去看）
-ls Library/MobileSubstrate/DynamicLibraries/ | grep Retro
-```
+## 三、使用
 
-应该看到 `RetroSaveInGame.dylib` 和 `RetroSaveInGame.plist` 两个文件。
+进游戏等约 2.5 秒，屏幕左侧中间出现黑色圆球「回溯 60s」。
 
-### 方式二：手动放 dylib（deb 装不上的兜底）
+- **点一下圆球** → 展开控制面板；再点收起
+- **长按圆球 0.8 秒** → 直接保存（不用展开面板）
+- **拖动圆球** → 挪位置（位置、时长、码率都记在游戏自己的 NSUserDefaults 里）
 
-1. 用 Filza 把 `RetroSaveInGame.dylib` 和 `RetroSaveInGame.plist` 拷进
-   上面的 DynamicLibraries 目录
-2. 权限设成 `0755`（dylib）和 `0644`（plist）
-3. `killall backboardd`
+面板四块：
 
-## 使用
+1. **① 开启录屏** —— 点左边那个系统控件，直接弹出 iOS 的「开始直播」面板，
+   选「回溯录制」→ 开始直播。**弹窗是从游戏进程发起的，所以盖在游戏上面，不用切出去。**
+   用的是系统公开 API `RPSystemBroadcastPickerView`，已预设只推「回溯录制」。
+2. **② 保存最近 N 秒** —— 点一下保存。1.8 秒内没等到录制进程回执，
+   会自动拉起「回溯」App 兜底保存，**绝不出现「点了但相册没有」**。
+3. **③ 时长** —— 30 / 60 / 120 秒
+4. **④ 码率** —— 4 / 6 / 8 / 12 Mbps，改完立刻切一段新分片，几秒内生效
 
-1. 打开**回溯** → 点「开始录制」→ 系统弹层确认，状态栏出现录制指示
-2. 切进游戏，等约 2.5 秒，屏幕左侧中间会出现一颗黑色圆按钮「回溯 60s」
-3. 打完精彩的一段，**点一下按钮** → 底部弹提示「已请求保存最近 60 秒」→ 相册里就有视频了
-4. **长按 0.8 秒**：在 30 / 60 / 120 秒之间切档
-5. **拖动**：挪按钮位置（位置和档位会记住）
+---
 
-游戏全程不会被切走，也不会因为保存而卡顿。
+## 四、排查
 
-## 按钮没出现？按顺序排查
+| 现象 | 检查 |
+|---|---|
+| 圆球不出现 | `ls /var/jb/Library/MobileSubstrate/DynamicLibraries/ \| grep Retro` 看文件在不在 |
+| 文件在但不出球 | 核对 plist 里的 Bundle ID 是不是 `com.juzi.balls`（球球大作战真实 ID） |
+| 出球但点了没视频 | 先确认录制已开启（状态栏有红色/蓝色录制标记） |
+| 弹不出「开始直播」 | App 本体没装或没刷新：`uicache -a` 后 respring |
+| 注入报错 | `log stream \| grep -i RetroSave` |
 
-```bash
-# 1) dylib 在不在注入目录
-ls /var/jb/Library/MobileSubstrate/DynamicLibraries/ | grep Retro
+---
 
-# 2) Bundle ID 对不对（必须和游戏进程一致）
-plutil -p /var/jb/Library/MobileSubstrate/DynamicLibraries/RetroSaveInGame.plist
+## 五、构建
 
-# 3) 看注入有没有报错（另开一个终端再进游戏）
-log stream | grep -i RetroSave
-```
-
-最常见的原因：
-
-- **Bundle ID 填错** —— 用上面的 itunes lookup 确认
-- **rootless / roothide 选错了 deb** —— 装到了读不进的路径，表现为"装成功但没效果"
-- **没签名** —— 越狱设备上注入的 dylib 需要至少 ad-hoc 签名，NewTerm 里补一下：
-  ```bash
-  cd /var/jb/Library/MobileSubstrate/DynamicLibraries/
-  ldid -S RetroSaveInGame.dylib
-  killall backboardd
-  ```
-- **游戏有反作弊/越狱检测** —— 可能直接闪退或主动屏蔽注入
-
-## 自己编译
-
-### 有 Mac（Xcode 命令行工具即可，不需要 Theos）
+纯 Objective-C 动态库，不依赖 Theos / Logos：
 
 ```bash
-cd retrosave-tweak
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 CC=$(xcrun --sdk iphoneos -f clang)
-$CC -isysroot $SDK -miphoneos-version-min=15.0 -fobjc-arc -Os -dynamiclib \
+$CC -isysroot $SDK -miphoneos-version-min=15.0 -fobjc-arc -w -Os -dynamiclib \
     -install_name /Library/MobileSubstrate/DynamicLibraries/RetroSaveInGame.dylib \
-    -framework UIKit -framework QuartzCore -framework CoreGraphics \
-    -arch arm64 -o RetroSaveInGame.dylib RetroSaveInGame.m
+    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework ReplayKit \
+    -arch arm64  -o arm64.dylib  RetroSaveInGame.m
+# arm64e 同理，然后 lipo 合并
 ldid -S RetroSaveInGame.dylib
-python3 ../tools/make_deb.py RetroSaveInGame.dylib RetroSaveInGame.plist \
-        control-rootless control-roothide out/
 ```
 
-### 用仓库自带的 CI 脚本
+`ReplayKit` 是「开启录屏」的关键，漏了会报
+`_OBJC_CLASS_$_RPSystemBroadcastPickerView` 未定义。
 
-`tools/build_tweak.sh` 会在每次 IPA 构建时顺带跑一遍，把 deb 以 base64 打进构建日志。
-脚本全程 `set +e` 且结尾 `exit 0`，失败也不影响 IPA 产出。
-
-### 用 Theos（老办法）
-
-`Makefile` 保留着，`make package FINALPACKAGE=1` 可以照常跑（依赖 Theos + Logos，
-编的是 `Tweak.xm`）。
-
-## 交互一览
-
-| 操作 | 效果 |
-|---|---|
-| 单击 | 保存最近 N 秒（默认 60） |
-| 长按 0.8 秒 | 在 30 / 60 / 120 秒之间切档 |
-| 拖动 | 挪按钮位置 |
+Filter：`RetroSaveInGame.plist` 里 `Bundles = ( "com.juzi.balls" )`。
