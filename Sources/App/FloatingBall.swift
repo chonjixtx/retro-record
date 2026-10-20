@@ -22,6 +22,7 @@ final class FloatingBallController {
     static let shared = FloatingBallController()
     private init() {
         observeRevive()
+        observeBridgeLog()
     }
 
     private let ballSize: CGFloat = 68
@@ -129,6 +130,8 @@ final class FloatingBallController {
         inAppBallHost?.view.isHidden = true
         inAppWindow?.isHidden = true
         overlayWindow?.isHidden = true
+        anchoredBallHost?.view.isHidden = true
+        anchoredWindow?.isHidden = true
         KeepAlive.shared.stop()
     }
 
@@ -186,6 +189,77 @@ final class FloatingBallController {
         ensureInAppBall(in: scene)
         inAppWindow?.isHidden = false
         inAppBallHost?.view.isHidden = false
+    }
+
+    // MARK: - 广播锚定全局球（无私有 API 实验）
+
+    /// 录制扩展通过 Darwin 通知广播 EXT_START / EXT_STOP，
+    /// 这里借此把球挂成「不挂 windowScene 的独立小窗」。
+    ///
+    /// 思路来自外部方案（TrollStore 悬浮窗管理器）：广播会话是系统级状态，
+    /// 采集期间窗口服务器对源 App 的图层处理可能放宽——这个假设文档查不到，
+    /// 只能真机验证。关键差异：完全不碰 FBScene 私有 API（那在你的设备上
+    /// 已验证必冻结/闪退），最坏结果就是球仍只在 App 内显示。
+    private var anchoredWindow: PassthroughWindow?
+    private var anchoredBallHost: UIHostingController<BallOnlyView>?
+    private var bridgeObservation: NotifyBridge.Observation?
+
+    private func observeBridgeLog() {
+        bridgeObservation = NotifyBridge.observeLog { [weak self] text in
+            Task { @MainActor in
+                self?.handleBridgeLog(text)
+            }
+        }
+    }
+
+    @MainActor
+    private func handleBridgeLog(_ text: String) {
+        guard UserDefaults.standard.bool(forKey: "retro.bg.overlay") else { return }
+        if text.hasPrefix("EXT_START") {
+            showAnchoredBall()
+        } else if text == "EXT_STOP" {
+            hideAnchoredBall()
+        }
+    }
+
+    /// 广播激活期间的全局球：独立 68×68 小窗，层级拉到 statusBar + 2000
+    @MainActor
+    func showAnchoredBall() {
+        guard enabled, let onTap, let onLongPress else { return }
+        _ = onLongPress
+        KeepAlive.shared.start()
+        if anchoredWindow == nil {
+            let w = PassthroughWindow(frame: CGRect(origin: currentPosition(),
+                                                    size: CGSize(width: ballSize, height: ballSize)))
+            w.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.statusBar.rawValue + 2000)
+            w.backgroundColor = .clear
+            w.isOpaque = false
+            let vc = UIViewController()
+            vc.view.backgroundColor = .clear
+            w.rootViewController = vc
+            w.isHidden = true
+            anchoredWindow = w
+        }
+        if anchoredBallHost == nil, let vc = anchoredWindow?.rootViewController {
+            let hc = makeBallHost(at: .zero)
+            vc.addChild(hc)
+            vc.view.addSubview(hc.view)
+            hc.didMove(toParent: vc)
+            anchoredBallHost = hc
+        }
+        anchoredWindow?.isHidden = false
+        anchoredBallHost?.view.isHidden = false
+        // 只留一颗球：藏掉 App 内窗与 FBScene 窗
+        inAppWindow?.isHidden = true
+        inAppBallHost?.view.isHidden = true
+        overlayWindow?.isHidden = true
+        overlayBallHost?.view.isHidden = true
+    }
+
+    @MainActor
+    func hideAnchoredBall() {
+        anchoredBallHost?.view.isHidden = true
+        anchoredWindow?.isHidden = true
     }
 
     // MARK: - 全局悬浮窗生命周期（RetroAppDelegate 通过 OverlayBridge 回调）
@@ -261,9 +335,10 @@ final class FloatingBallController {
     private func ensureInAppBall(in scene: UIWindowScene) {
         if inAppWindow == nil {
             let w = PassthroughWindow(windowScene: scene)
-            // 抬到状态栏之上，避免被导航栏/状态栏/HUD 这类原生层盖住而"看起来消失了"。
-            // 特意不取 .alert 层级：那样会挡在系统权限弹窗上面，用户点不到「允许」。
-            w.windowLevel = .statusBar + 100
+            // 对接外部方案的建议值：statusBar + 2000，把球抬到 App 内一切原生层之上。
+            // 窗口铺满屏幕但 PassthroughWindow 对空白区域 hitTest 返回 nil，
+            // 触摸全部穿透，球本身只有 68×68，不会挡 App 内弹窗的按钮。
+            w.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.statusBar.rawValue + 2000)
             w.backgroundColor = .clear
             w.isOpaque = false
             let vc = UIViewController()
@@ -291,15 +366,17 @@ final class FloatingBallController {
         if dragStart == nil { dragStart = currentPosition() }
         let base = dragStart!
         let newP = clamp(CGPoint(x: base.x + translation.width, y: base.y + translation.height))
-        // 全局小窗：直接移动窗口本体（球铺满窗口，不用动子视图）
+        // 全局/广播锚定小窗：直接移动窗口本体（球铺满窗口，不用动子视图）
         overlayWindow?.frame.origin = newP
+        anchoredWindow?.frame.origin = newP
         // App 内小窗：窗口铺满屏幕，移动球子视图
         inAppBallHost?.view.frame.origin = newP
     }
 
     private func dragEnded() {
         defer { dragStart = nil }
-        let cur = overlayWindow?.frame.origin
+        let cur = anchoredWindow?.frame.origin
+            ?? overlayWindow?.frame.origin
             ?? inAppBallHost?.view.frame.origin
             ?? currentPosition()
         let b = UIScreen.main.bounds
@@ -307,6 +384,7 @@ final class FloatingBallController {
         let snappedX = (cur.x <= b.width - ballSize - cur.x) ? 8 : (b.width - ballSize - 8)
         let snapped = clamp(CGPoint(x: snappedX, y: cur.y))
         overlayWindow?.frame.origin = snapped
+        anchoredWindow?.frame.origin = snapped
         inAppBallHost?.view.frame.origin = snapped
         persist(snapped)
     }

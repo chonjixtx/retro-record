@@ -388,24 +388,22 @@ struct ContentView: View {
                 Toggle("录进麦克风声音", isOn: $model.microphoneEnabled)
                 Toggle("App 内悬浮球", isOn: $model.floatingBallEnabled)
 
-                // 全局悬浮球（私有 FrontBoard Scene 方案）。⚠️ 高风险：在部分机型/iOS
-                // 会让私有前台 Scene 拦截「上滑回桌面」手势 → 整屏冻结，需硬重启脱困。
-                // 因此做成手动开关、默认关闭：只有用户主动打开才建 Scene，开屏即安全。
+                // 后台悬浮球（广播锚定实验）。不再走 FBScene 私有 FrontBoard Scene
+                // ——那套在你设备上已验证必冻结/闪退。新方案：点「开始录屏」后，
+                // 录制扩展广播 EXT_START，球随即挂成「无 windowScene 的独立小窗」，
+                // 借广播会话的系统级状态尝试跨 App 常驻；零私有 API，最坏退回 App 内球。
                 if RetroEnv.backgroundOverlayAvailable && RetroEnv.globalOverlayEnabled {
-                    Toggle("后台悬浮球（实验·高风险）", isOn: $backgroundOverlay)
+                    Toggle("后台悬浮球（实验·广播锚定）", isOn: $backgroundOverlay)
                         .onChange(of: backgroundOverlay) { on in
                             if on {
-                                // 用户主动打开 → 建立全局浮动 Scene + 球
-                                OverlayBridge.setShellReadyHandler {
-                                    DispatchQueue.main.async {
-                                        FloatingBallController.shared.overlayShellReady()
-                                    }
-                                }
-                                OverlayBridge.startOverlayScene()
+                                model.notice = Notice(
+                                    text: "已开启：点「开始录屏」后球会尝试常驻到游戏上层；若进游戏后没有球，说明此机型不放宽，球只会在 App 内显示",
+                                    isError: false
+                                )
                             } else {
-                                // 关闭 → 拆掉 Scene，球收起，避免冻结残留
-                                OverlayBridge.teardown()
+                                FloatingBallController.shared.hideAnchoredBall()
                                 FloatingBallController.shared.hide()
+                                OverlayBridge.teardown()
                             }
                             // 让 FloatingBallController 按新开关决定走全局/App 内
                             syncFloatingBall(enabled: model.floatingBallEnabled)
