@@ -22,9 +22,11 @@ rm -rf .tb && mkdir -p .tb
 LOG=.tb/build.log
 : > "$LOG"
 
+# ReplayKit 是「开启录屏」按钮的关键：RPSystemBroadcastPickerView 属于这个框架，
+# 少了它链接会报 _OBJC_CLASS_$_RPSystemBroadcastPickerView 未定义。
 COMMON="-isysroot $SDK -miphoneos-version-min=15.0 -fobjc-arc -w -Os -dynamiclib \
         -install_name /Library/MobileSubstrate/DynamicLibraries/RetroSaveInGame.dylib \
-        -framework UIKit -framework QuartzCore -framework CoreGraphics"
+        -framework UIKit -framework QuartzCore -framework CoreGraphics -framework ReplayKit"
 
 $CC $COMMON -arch arm64  -o .tb/arm64.dylib  RetroSaveInGame.m  >>"$LOG" 2>&1
 R64=$?

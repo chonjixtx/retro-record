@@ -37,6 +37,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var configObservation: NotifyBridge.Observation?
     private var pingObservation: NotifyBridge.Observation?
     private var triggerObservation: NotifyBridge.Observation?
+    private var bitrateObservation: NotifyBridge.Observation?
 
     // MARK: - 生命周期
 
@@ -62,6 +63,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         registerConfigObserver()
         registerPingObserver()
         registerTriggerObserver()
+        registerBitrateObserver()
     }
 
     override func broadcastPaused() {
@@ -96,6 +98,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
         if let observation = triggerObservation {
             NotifyBridge.unobserve(observation)
             triggerObservation = nil
+        }
+        if let observation = bitrateObservation {
+            NotifyBridge.unobserve(observation)
+            bitrateObservation = nil
         }
 
         // 保底路径：录制一结束就把已有的分片存进相册，不依赖任何跨进程通信。
@@ -411,6 +417,19 @@ final class SampleHandler: RPBroadcastSampleHandler {
             self.stateLock.lock()
             self.pendingSaveSeconds = target
             self.stateLock.unlock()
+        }
+    }
+
+    /// 游戏内悬浮窗面板直接改码率。改完立刻切一段新分片，让新码率马上生效，
+    /// 而不是等当前这段 10 秒录完 —— 用户改完几秒内就能感觉到。
+    private func registerBitrateObserver() {
+        bitrateObservation = NotifyBridge.observeBitrate { [weak self] mbps in
+            guard let self else { return }
+            let value = min(max(mbps, 1), 20)
+            self.config.bitrateMbps = value
+            RecorderConfigStore.save(self.config)
+            NotifyBridge.postLog("BITRATE_\(Int(value))")
+            self.rotateSegment(force: true)
         }
     }
 

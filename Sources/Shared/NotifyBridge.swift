@@ -22,6 +22,10 @@ public enum NotifyBridge {
     /// trigger 是「任意第三方进程 → 录制扩展」，且扩展收到后无条件导出，
     /// 不看 AppGroup.isShared：触发方无法保证主 App 没被系统挂起。
     public static let triggerPrefix = "com.retro.recorder.trigger."
+    /// 游戏内悬浮窗面板直接改码率：外部进程 → 录制扩展。
+    /// 与 configPrefix 的区别 —— config 只同步保留时长（主 App → 扩展）；
+    /// bitrate 允许任意外部进程改，且扩展收到后立刻切一段新分片让新码率马上生效。
+    public static let bitratePrefix = "com.retro.recorder.bitrate."
 
     /// 录制扩展打开：日志除广播外再落一份到共享目录，主 App 事后可读。
     /// 主 App 保持 false，避免把自己的日志也混进同一个文件。
@@ -59,6 +63,11 @@ public enum NotifyBridge {
     /// 外部进程请求「导出最近 seconds 秒」。由录制扩展接收并执行
     public static func postTrigger(seconds: Int) {
         post(name: triggerPrefix + String(max(seconds, 5)))
+    }
+
+    /// 外部进程请求「把码率改成 mbps」。由录制扩展接收，下一段分片生效
+    public static func postBitrate(mbps: Int) {
+        post(name: bitratePrefix + String(min(max(mbps, 1), 20)))
     }
 
     /// 任意一侧广播一条日志。字符会被规整成通知名能接受的形态
@@ -117,6 +126,12 @@ public enum NotifyBridge {
     public static func observeTrigger(_ handler: @escaping (Double) -> Void) -> Observation {
         observe(prefix: triggerPrefix) { text in
             handler(Double(text) ?? 60)
+        }
+    }
+
+    public static func observeBitrate(_ handler: @escaping (Double) -> Void) -> Observation {
+        observe(prefix: bitratePrefix) { text in
+            handler(Double(text) ?? 6)
         }
     }
 
