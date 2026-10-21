@@ -36,6 +36,7 @@
 #define RR_LOG_PREFIX @"com.retro.recorder.log."
 #define RR_BITRATE_PREFIX @"com.retro.recorder.bitrate."
 #define RR_RES_PREFIX @"com.retro.recorder.res."
+#define RR_CFG_PREFIX @"com.retro.recorder.cfg."
 #define RR_BROADCAST_EXT @"com.retro.recorder.broadcast"
 #define RR_PANEL_W 224
 
@@ -82,6 +83,11 @@ static void RRPostBitrate(void) {
 
 static void RRPostRes(void) {
     RRPost([RR_RES_PREFIX stringByAppendingFormat:@"%ld", (long)g_res]);
+}
+
+/* 把当前选择的保留时长同步给扩展（面板改时长时发） */
+static void RRPostCfg(void) {
+    RRPost([RR_CFG_PREFIX stringByAppendingFormat:@"%ld", (long)g_seconds]);
 }
 
 /* ---------- 确认录制进程收到了没有 ---------- */
@@ -549,6 +555,9 @@ static void RRRefreshPanel(void) {
         RRSavePrefs();
         RRUpdateTitle();
         RRRefreshPanel();
+        // 同步给录制扩展：保留窗口必须盖住这个时长，否则选 60 秒时
+        // 落盘只有 50 秒左右的料，导出的视频会短一截
+        RRPostCfg();
     }
 }
 
@@ -660,6 +669,7 @@ static void RRAttach(void) {
                            dispatch_get_main_queue(), ^{
                 RRPostBitrate();
                 RRPostRes();
+                RRPostCfg();
             });
         }
     }

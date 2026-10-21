@@ -28,6 +28,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var pendingSaveSeconds: Double?
     /// 降级模式下扩展读不到主 App 的配置文件，保留秒数只能靠 Darwin 通道同步
     private var retentionSeconds: Double = 600
+    /// 上一次收到外部保存指令的时间。游戏内悬浮窗为了防止单条通知丢失会连发三次，
+    /// 不去重的话会导出三遍，相册里多出两个几乎一样的视频
+    private var lastTriggerAt: Double = 0
     /// 停止录制时用来等最后一个分片收尾落盘
     private var stopSignal: DispatchSemaphore?
 
@@ -147,8 +150,12 @@ final class SampleHandler: RPBroadcastSampleHandler {
         if let seconds = drainPendingSave() {
             rotateSegment(force: true)
             let target = max(seconds, 5)
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                self?.exportRecent(seconds: target)
+            // 立刻把这一刻的片段列表冻结下来。录制线程还在往前写新片段，
+            // 等导出真正开始时再列目录，就会把「按下保存之后」的内容也算进来 ——
+            // 用户看到的就是保存之后的录像，而不是按下前那一段。
+            let frozen = listSegments()
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.exportRecent(seconds: target, files: frozen)
             }
         }
 
@@ -342,10 +349,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
         configObservation = NotifyBridge.observeConfig { [weak self] seconds in
             guard let self else { return }
             let previous = self.currentRetention()
-            self.setRetention(seconds)
+            // 多留 20 秒：保留窗口按时间戳卡边，正好等于请求时长时落盘必然不够
+            self.setRetention(seconds + 20)
             // 主 App 会周期性补发同一条配置，值没变就别刷日志
             guard abs(previous - seconds) > 0.5 else { return }
-            SegmentStore.prune(retentionSeconds: seconds)
+            SegmentStore.prune(retentionSeconds: seconds + 20)
             NotifyBridge.postLog("CFG_\(Int(seconds))")
         }
     }
@@ -431,10 +439,29 @@ final class SampleHandler: RPBroadcastSampleHandler {
         triggerObservation = NotifyBridge.observeTrigger { [weak self] seconds in
             guard let self else { return }
             let target = max(seconds, 5)
-            NotifyBridge.postLog("TRIG_SAVE_\(Int(target))")
             // 固定名回执：先回一条「指令已收到」，让悬浮窗能区分
             // 「扩展活着但没送到」和「扩展根本不在」这两种情况
             NotifyBridge.postAckTrig()
+
+            // 悬浮窗为了防止单条通知丢失会连发三次，这里 2 秒内只认第一发
+            let now = Date().timeIntervalSince1970
+            self.stateLock.lock()
+            let duplicate = now - self.lastTriggerAt < 2.0
+            if !duplicate { self.lastTriggerAt = now }
+            self.stateLock.unlock()
+            if duplicate {
+                NotifyBridge.postLog("TRIG_DUP")
+                return
+            }
+
+            NotifyBridge.postLog("TRIG_SAVE_\(Int(target))")
+            // 保留窗口必须盖住请求时长，否则 60 秒的请求落盘只有 50 秒的料，
+            // 导出的视频就会短一截。多留 20 秒作为分片余量。
+            let needed = target + 20
+            if needed > self.currentRetention() {
+                self.setRetention(needed)
+                NotifyBridge.postLog("RET_UP_\(Int(needed))")
+            }
             self.stateLock.lock()
             self.pendingSaveSeconds = target
             self.stateLock.unlock()
@@ -534,8 +561,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
             }
     }
 
-    /// 从最新往回凑够需要的秒数
-    private func pickSegments(from files: [URL], seconds: Double) -> [URL] {
+    /// 从最新往回凑够需要的秒数。
+    ///
+    /// 返回选中的片段（旧 → 新）以及**最旧那段要裁掉多少秒**。
+    /// 以前整段整段地拿，30 秒的请求会导出 30~40 秒 —— 多出来的是最后那段的余量。
+    private func pickSegments(from files: [URL], seconds: Double) -> (urls: [URL], trimLeading: Double) {
         var picked: [URL] = []
         var total: Double = 0
         for url in files.reversed() {
@@ -545,23 +575,25 @@ final class SampleHandler: RPBroadcastSampleHandler {
             total += duration
             if total >= seconds { break }
         }
-        return picked
+        return (picked, max(total - seconds, 0))
     }
 
-    private func exportRecent(seconds: Double) {
-        let files = listSegments()
+    /// files 由调用方冻结后传入：导出要基于「按下保存那一刻」的片段集合，
+    /// 不能等到导出时再列目录（那时录制线程已经又写了新片段）
+    private func exportRecent(seconds: Double, files: [URL]) {
         NotifyBridge.postLog("SEGS_\(files.count)")
         let picked = pickSegments(from: files, seconds: seconds)
-        NotifyBridge.postLog("PICK_\(picked.count)_of_\(files.count)")
-        guard !picked.isEmpty else {
+        NotifyBridge.postLog("PICK_\(picked.urls.count)_of_\(files.count)")
+        guard !picked.urls.isEmpty else {
             NotifyBridge.postLog("SAVE_FAIL_nopick")
             NotifyBridge.postAckFail()
             return
         }
-        export(picked: picked, completion: nil)
+        export(picked: picked.urls, trimLeading: picked.trimLeading, completion: nil)
     }
 
-    private func export(picked: [URL], completion: ((Bool) -> Void)?) {
+
+    private func export(picked: [URL], trimLeading: Double = 0, completion: ((Bool) -> Void)?) {
         guard !picked.isEmpty else {
             completion?(false)
             return
@@ -583,16 +615,26 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
         var cursor = CMTime.zero
         var transform: CGAffineTransform?
-        for url in picked {
+        let trim = max(trimLeading, 0)
+        for (index, url) in picked.enumerated() {
             let asset = AVURLAsset(url: url)
             guard let source = asset.tracks(withMediaType: .video).first else { continue }
-            let range = CMTimeRange(start: .zero, duration: asset.duration)
+            var start = CMTime.zero
+            var duration = asset.duration
+            if index == 0 && trim > 0.05 {
+                // 最旧那段只取尾部，把多出来的秒数从头部裁掉，
+                // 这样「保存 30 秒」导出的就是 30 秒，而不是 30~40 秒
+                let keep = max(duration.seconds - trim, 0.2)
+                start = CMTime(seconds: duration.seconds - keep, preferredTimescale: 600)
+                duration = CMTime(seconds: keep, preferredTimescale: 600)
+            }
+            let range = CMTimeRange(start: start, duration: duration)
             try? videoTrack.insertTimeRange(range, of: source, at: cursor)
             if transform == nil { transform = source.preferredTransform }
             if let audioTrack, let audioSource = asset.tracks(withMediaType: .audio).first {
                 try? audioTrack.insertTimeRange(range, of: audioSource, at: cursor)
             }
-            cursor = cursor + range.duration
+            cursor = cursor + duration
         }
         videoTrack.preferredTransform = transform ?? .identity
 
@@ -754,11 +796,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private func autoSaveOnStop() {
         let files = listSegments()
         let picked = pickSegments(from: files, seconds: currentRetention())
-        NotifyBridge.postLog("STOP_SAVE_\(picked.count)_of_\(files.count)")
-        guard !picked.isEmpty else { return }
+        NotifyBridge.postLog("STOP_SAVE_\(picked.urls.count)_of_\(files.count)")
+        guard !picked.urls.isEmpty else { return }
 
         let sem = DispatchSemaphore(value: 0)
-        export(picked: picked) { ok in
+        export(picked: picked.urls) { ok in
             NotifyBridge.postLog(ok ? "STOP_OK" : "STOP_FAIL")
             sem.signal()
         }
