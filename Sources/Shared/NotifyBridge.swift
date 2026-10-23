@@ -60,7 +60,10 @@ public enum NotifyBridge {
     /// 分辨率上限（高度像素），0 = 原画质
     public static let resSteps = [0, 720, 1080, 1440, 2160]
 
-    public static var triggerNames: [String] { secondSteps.map { triggerPrefix + String($0) } }
+    /// 悬浮球允许手输任意秒数，落在这个区间内的整数都要能被扩展收到
+    public static let customSecondsRange = Array(1...600)
+
+    public static var triggerNames: [String] { customSecondsRange.map { triggerPrefix + String($0) } }
     public static var saveNames: [String] { secondSteps.map { savePrefix + String($0) } }
     public static var configNames: [String] { secondSteps.map { configPrefix + String($0) } }
     public static var bitrateNames: [String] { bitrateSteps.map { bitratePrefix + String($0) } }

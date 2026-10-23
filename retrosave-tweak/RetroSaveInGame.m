@@ -42,13 +42,14 @@
 
 /* 动作目标必须先声明：RRBuildPanel 在 @implementation 之前就要用到 [RRActions shared]，
    Objective-C 不允许对还没声明的类发消息（会报 Use of undeclared identifier）。 */
-@interface RRActions : NSObject
+@interface RRActions : NSObject <UITextFieldDelegate>
 + (instancetype)shared;
 - (void)tapped;
 - (void)togglePanel;
 - (void)closePanel;
 - (void)openApp;
 - (void)secondsChanged:(UISegmentedControl *)seg;
+- (void)applySeconds;
 - (void)bitrateChanged:(UISegmentedControl *)seg;
 - (void)resChanged:(UISegmentedControl *)seg;
 - (void)longPressed:(UILongPressGestureRecognizer *)ges;
@@ -61,10 +62,23 @@ static UILabel *g_status = nil;
 static UISegmentedControl *g_segSeconds = nil;
 static UISegmentedControl *g_segBitrate = nil;
 static UISegmentedControl *g_segRes = nil;
+static UITextField *g_secField = nil;     // ③ 自定义秒数输入框
 static NSInteger g_seconds = 60;
 static NSInteger g_bitrate = 6;
 static NSInteger g_res = 0;   // 输出高度上限（0 = 原画质）
 static BOOL g_pollInstalled = NO;
+
+/* 手输秒数的合法区间：下限取自 fine media 的最小可导出长度，
+   上限 600 秒要和 NotifyBridge.customSecondsRange 保持一致 ——
+   超出这个区间的通知名扩展侧没注册，指令会石沉大海。 */
+#define RR_SEC_MIN 5
+#define RR_SEC_MAX 600
+
+static NSInteger RRClampSeconds(NSInteger v) {
+    if (v < RR_SEC_MIN) return RR_SEC_MIN;
+    if (v > RR_SEC_MAX) return RR_SEC_MAX;
+    return v;
+}
 
 /* ---------- 指令发送 ---------- */
 
@@ -292,6 +306,22 @@ static void RRPositionPanel(void) {
 
 /* ---------- 面板 ---------- */
 
+/* 数字键盘没有换行键，在输入框上方挂一条「应用秒数」，输完直接点就行 */
+static UIView *RRFieldToolbar(void) {
+    UIToolbar *tb = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 240, 36)];
+    tb.tintColor = [UIColor systemBlueColor];
+    UIBarButtonItem *flex =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+                                                     target:nil action:nil];
+    UIBarButtonItem *done =
+        [[UIBarButtonItem alloc] initWithTitle:@"应用秒数"
+                                         style:UIBarButtonItemStyleDone
+                                        target:[RRActions shared]
+                                        action:@selector(applySeconds)];
+    tb.items = @[flex, done];
+    return tb;
+}
+
 static void RRBuildPanel(void) {
     if (g_panel) return;
 
@@ -404,6 +434,43 @@ static void RRBuildPanel(void) {
     [p addSubview:g_segSeconds];
     y += 32;
 
+    // 3b) 自定义秒数：直接输数字，面板宽只有 224 所以排一行「标签 + 输入框 + 应用」
+    UILabel *l3b = [[UILabel alloc] initWithFrame:CGRectMake(pad, y, 48, 26)];
+    l3b.text = @"自定义";
+    l3b.textColor = [UIColor colorWithWhite:1 alpha:0.7];
+    l3b.font = [UIFont systemFontOfSize:11];
+    [p addSubview:l3b];
+
+    g_secField = [[UITextField alloc] initWithFrame:CGRectMake(pad + 50, y, 62, 26)];
+    g_secField.keyboardType = UIKeyboardTypeNumberPad;
+    g_secField.borderStyle = UITextBorderStyleNone;
+    g_secField.layer.cornerRadius = 6;
+    g_secField.layer.borderWidth = 1;
+    g_secField.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.28].CGColor;
+    g_secField.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
+    g_secField.textColor = [UIColor whiteColor];
+    g_secField.font = [UIFont systemFontOfSize:13];
+    g_secField.textAlignment = NSTextAlignmentCenter;
+    g_secField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    g_secField.attributedPlaceholder =
+        [[NSAttributedString alloc] initWithString:@"5-600"
+                                        attributes:@{NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.45]}];
+    g_secField.delegate = [RRActions shared];
+    g_secField.inputAccessoryView = RRFieldToolbar();
+    [p addSubview:g_secField];
+
+    UIButton *apply = [UIButton buttonWithType:UIButtonTypeSystem];
+    apply.frame = CGRectMake(pw - pad - 66, y, 66, 26);
+    apply.backgroundColor = [UIColor colorWithWhite:1 alpha:0.16];
+    apply.layer.cornerRadius = 6;
+    [apply setTitle:@"应用" forState:UIControlStateNormal];
+    [apply setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    apply.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [apply addTarget:[RRActions shared] action:@selector(applySeconds)
+    forControlEvents:UIControlEventTouchUpInside];
+    [p addSubview:apply];
+    y += 34;
+
     // 4) 码率档位
     UILabel *l4 = [[UILabel alloc] initWithFrame:CGRectMake(pad, y, 60, 16)];
     l4.text = @"④ 码率";
@@ -461,7 +528,11 @@ static void RRRefreshPanel(void) {
           forState:UIControlStateNormal];
     NSArray *secs = @[@30, @60, @120];
     NSUInteger si = [secs indexOfObject:@(g_seconds)];
-    g_segSeconds.selectedSegmentIndex = (si == NSNotFound) ? 1 : si;
+    // 自定义值不属于任何快捷档位：不要默默高亮某一个，直接取消选中，避免误导
+    g_segSeconds.selectedSegmentIndex = (si == NSNotFound) ? UISegmentedControlNoSegment : si;
+    if (g_secField && !g_secField.isFirstResponder) {
+        g_secField.text = [NSString stringWithFormat:@"%ld", (long)g_seconds];
+    }
     NSArray *brs = @[@4, @6, @8, @12];
     NSUInteger bi = [brs indexOfObject:@(g_bitrate)];
     g_segBitrate.selectedSegmentIndex = (bi == NSNotFound) ? 1 : bi;
@@ -522,15 +593,19 @@ static void RRRefreshPanel(void) {
 
 - (void)togglePanel {
     if (!g_panel) return;
-    g_panel.hidden = !g_panel.hidden;
-    if (!g_panel.hidden) {
+    if (g_panel.hidden) {
+        g_panel.hidden = NO;
         RRRefreshPanel();
         RRPositionPanel();
         [g_panel.superview bringSubviewToFront:g_panel];
+    } else {
+        [g_secField resignFirstResponder];
+        g_panel.hidden = YES;
     }
 }
 
 - (void)closePanel {
+    [g_secField resignFirstResponder];
     if (g_panel) g_panel.hidden = YES;
 }
 
@@ -559,6 +634,78 @@ static void RRRefreshPanel(void) {
         // 落盘只有 50 秒左右的料，导出的视频会短一截
         RRPostCfg();
     }
+}
+
+/* ③ 自定义秒数：读输入框内容，夹到合法区间后立刻生效并同步给扩展。
+   超出区间不静默处理 —— 告诉用户被夹成了多少，避免「我输 900 结果存了 600」的困惑。 */
+- (void)applySeconds {
+    if (!g_secField) return;
+    NSString *raw = [g_secField.text stringByTrimmingCharactersInSet:
+                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    [g_secField resignFirstResponder];
+
+    if (raw.length == 0) {
+        g_secField.text = [NSString stringWithFormat:@"%ld", (long)g_seconds];
+        return;
+    }
+    NSInteger v = [raw integerValue];
+    if (v <= 0) {
+        RRToast(@"秒数得是大于 0 的整数");
+        g_secField.text = [NSString stringWithFormat:@"%ld", (long)g_seconds];
+        return;
+    }
+
+    NSInteger clamped = RRClampSeconds(v);
+    g_seconds = clamped;
+    g_secField.text = [NSString stringWithFormat:@"%ld", (long)clamped];
+    if (clamped != v) {
+        RRToast([NSString stringWithFormat:@"可选 %d-%d 秒，已按 %ld 秒保存",
+                 RR_SEC_MIN, RR_SEC_MAX, (long)clamped]);
+    }
+    RRSavePrefs();
+    RRUpdateTitle();
+    RRRefreshPanel();
+    // 保留窗口必须盖住这个时长，否则标称 300 秒、扩展手里只有 60 秒的量。
+    // cfg 通道只按 App 的固定档位注册，手输值大概率送不到；真正确保窗口够用的是
+    // 扩展收到 trigger 时按需抬窗口（SampleHandler 里的 RET_UP_ 分支）。
+    RRPostCfg();
+}
+
+#pragma mark - UITextFieldDelegate
+
+/* 键盘弹起来会盖住面板下半截，面板在屏幕中下部时整体上移，结束后复位 */
+- (void)textFieldDidBeginEditing:(UITextField *)tf {
+    if (!g_panel) return;
+    CGFloat shift = (CGRectGetMinY(g_panel.frame) > 150) ? -120.0 : 0.0;
+    [UIView animateWithDuration:0.22 animations:^{
+        g_panel.transform = CGAffineTransformMakeTranslation(0, shift);
+    }];
+}
+
+- (void)textFieldDidEndEditing:(UITextField *)tf {
+    if (!g_panel) return;
+    [UIView animateWithDuration:0.22 animations:^{
+        g_panel.transform = CGAffineTransformIdentity;
+    }];
+}
+
+- (BOOL)textField:(UITextField *)tf
+    shouldChangeCharactersInRange:(NSRange)range
+    replacementString:(NSString *)string {
+    // 只收数字；再把长度卡在 3 位（上限 600），省得用户输完才发现超范围。
+    // 粘贴的场景也走这里，一串非数字会被直接拒绝。
+    NSCharacterSet *digits = [NSCharacterSet decimalDigitCharacterSet];
+    for (NSUInteger i = 0; i < string.length; i++) {
+        if (![digits characterIsMember:[string characterAtIndex:i]]) return NO;
+    }
+    NSString *next = [tf.text stringByReplacingCharactersInRange:range withString:string];
+    return next.length <= 3;
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)tf {
+    [tf resignFirstResponder];
+    [self applySeconds];
+    return YES;
 }
 
 - (void)bitrateChanged:(UISegmentedControl *)seg {
@@ -632,7 +779,9 @@ static void RRAttach(void) {
 
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
         NSInteger savedSec = [ud integerForKey:@"RetroSaveSeconds"];
-        if (savedSec > 0) g_seconds = savedSec;
+        // 老版本可能存过超出区间的值（比如 App 里给的 900），读回来先夹一下，
+        // 否则发出去的通知名扩展没注册，点保存不会有任何反应
+        if (savedSec > 0) g_seconds = RRClampSeconds(savedSec);
         NSInteger savedBr = [ud integerForKey:@"RetroSaveBitrate"];
         if (savedBr > 0) g_bitrate = savedBr;
         NSInteger savedRes = [ud integerForKey:@"RetroSaveRes"];
