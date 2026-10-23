@@ -456,13 +456,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
             NotifyBridge.postLog("TRIG_SAVE_\(Int(target))")
 
-            // 手输的任意秒数不一定能被 cfg 通道送到（cfg 只按 App 的档位枚举注册），
-            // 所以收到指令时按需抬高保留窗口 —— 否则标称 300 秒、落盘只有 App 里那个 60 秒的量
-            let needed = target + 20
-            if self.currentRetention() < needed {
-                self.setRetention(needed)
-                NotifyBridge.postLog("RET_UP_\(Int(needed))")
-            }            // 保留窗口必须盖住请求时长，否则 60 秒的请求落盘只有 50 秒的料，
+            // 保留窗口必须盖住请求时长，否则 60 秒的请求落盘只有 50 秒的料，
             // 导出的视频就会短一截。多留 20 秒作为分片余量。
             let needed = target + 20
             if needed > self.currentRetention() {
