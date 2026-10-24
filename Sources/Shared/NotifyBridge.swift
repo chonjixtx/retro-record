@@ -49,6 +49,9 @@ public enum NotifyBridge {
     public static let ackDone = ackPrefix + "done"
     /// 写入相册失败（权限被拒 / 没有可用分片）
     public static let ackFail = ackPrefix + "fail"
+    /// 落盘成功的**实际秒数**回执：请求 300 秒但缓冲只有 115 秒时，
+    /// 悬浮窗要拿这个真实秒数提示，而不是照着请求值报「已保存 最近 300 秒」骗自己。
+    public static let doneSecPrefix = "com.retro.recorder.done."
 
     // MARK: - 显式注册用的候选名
     //
@@ -65,7 +68,10 @@ public enum NotifyBridge {
 
     public static var triggerNames: [String] { customSecondsRange.map { triggerPrefix + String($0) } }
     public static var saveNames: [String] { secondSteps.map { savePrefix + String($0) } }
-    public static var configNames: [String] { secondSteps.map { configPrefix + String($0) } }
+    /// 悬浮球会把手输的任意秒数当保留窗口同步过来，所以 cfg 也要覆盖连续区间
+    public static var configNames: [String] { customSecondsRange.map { configPrefix + String($0) } }
+    /// 实际落盘秒数同样可能是任意值
+    public static var doneSecNames: [String] { customSecondsRange.map { doneSecPrefix + String($0) } }
     public static var bitrateNames: [String] { bitrateSteps.map { bitratePrefix + String($0) } }
     public static var resNames: [String] { resSteps.map { resPrefix + String($0) } }
     /// ping 用两个固定名交替，避免 notifyd 把连续两次同名通知合并掉
@@ -117,6 +123,12 @@ public enum NotifyBridge {
     public static func postAckPing() { post(name: ackPing) }
     /// 扩展回执：已写入相册
     public static func postAckDone() { post(name: ackDone) }
+    /// 扩展回执：已写入相册，并带上实际写进去的秒数（Darwin 通知传不了 payload，
+    /// 只能编码在名字里；超出 1...600 会被夹到边界）
+    public static func postAckDone(seconds: Int) {
+        let v = min(max(seconds, 1), 600)
+        post(name: doneSecPrefix + String(v))
+    }
     /// 扩展回执：写入失败
     public static func postAckFail() { post(name: ackFail) }
 

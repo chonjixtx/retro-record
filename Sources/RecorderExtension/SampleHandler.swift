@@ -585,6 +585,19 @@ final class SampleHandler: RPBroadcastSampleHandler {
         NotifyBridge.postLog("SEGS_\(files.count)")
         let picked = pickSegments(from: files, seconds: seconds)
         NotifyBridge.postLog("PICK_\(picked.urls.count)_of_\(files.count)")
+        // 缓冲里就这么多料：请求 300 秒但录制才 115 秒（或保留窗口被压窄过），
+        // 这里如实记一笔，免得排查时以为导出逻辑算错了
+        if !picked.urls.isEmpty {
+            var have: Double = 0
+            for u in picked.urls {
+                let d = AVURLAsset(url: u).duration.seconds
+                if d.isFinite, d > 0.02 { have += d }
+            }
+            have -= picked.trimLeading
+            if have + 1.0 < seconds {
+                NotifyBridge.postLog("SHORT_\(Int(round(have)))_of_\(Int(round(seconds)))")
+            }
+        }
         guard !picked.urls.isEmpty else {
             NotifyBridge.postLog("SAVE_FAIL_nopick")
             NotifyBridge.postAckFail()
@@ -672,15 +685,21 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 return
             }
             NotifyBridge.postLog("EXPORT_OK")
+            let actual = cursor.seconds
+            NotifyBridge.postLog("SECS_\(Int(round(actual)))")
             self.saveToPhotos(
                 url: outputURL,
+                seconds: actual,
                 cleanup: { try? FileManager.default.removeItem(at: outputURL) },
                 done: { ok in completion?(ok) }
             )
         }
     }
 
-    private func saveToPhotos(url: URL, cleanup: @escaping () -> Void, done: @escaping (Bool) -> Void) {
+    private func saveToPhotos(url: URL,
+                              seconds: Double = 0,
+                              cleanup: @escaping () -> Void,
+                              done: @escaping (Bool) -> Void) {
         requestPhotoAuthIfNeeded { [weak self] granted in
             guard let self else { cleanup(); done(false); return }
             guard granted else {
@@ -700,6 +719,8 @@ final class SampleHandler: RPBroadcastSampleHandler {
                     NotifyBridge.postLog("PHOTO_OK")
                     // 固定名回执：游戏内悬浮窗靠这条显示「已保存」
                     NotifyBridge.postAckDone()
+                    // 再回一条带真实秒数的，让悬浮窗报的是落盘量而不是请求量
+                    NotifyBridge.postAckDone(seconds: Int(round(seconds)))
                 } else {
                     let ns = error as NSError?
                     NotifyBridge.postLog("PHOTO_FAIL_\(ns?.code ?? -1)")

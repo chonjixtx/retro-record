@@ -104,6 +104,17 @@ static void RRPostCfg(void) {
     RRPost([RR_CFG_PREFIX stringByAppendingFormat:@"%ld", (long)g_seconds]);
 }
 
+/* 每 20 秒补发一次保留窗口。
+   扩展按窗口定期清理旧分片，窗口一窄（比如主 App 那边是 120 秒）旧料就被删掉了，
+   等到点保存时再抬窗口已经来不及 —— 删掉的分片回不来，于是「选 300 秒只出 115 秒」。 */
+static void RRCfgKeepAlive(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        RRPostCfg();
+        RRCfgKeepAlive();
+    });
+}
+
 /* ---------- 确认录制进程收到了没有 ---------- */
 
 /* 扩展侧新增的一组「固定名字」回执。
@@ -115,6 +126,8 @@ static void RRPostCfg(void) {
 #define RR_ACK_PING    @"com.retro.recorder.ack.ping"
 #define RR_ACK_DONE    @"com.retro.recorder.ack.done"
 #define RR_ACK_FAIL    @"com.retro.recorder.ack.fail"
+/* 扩展回「实际落盘秒数」用的通道，秒数编码在名字里，和 trigger 一样要全量注册 */
+#define RR_DONE_SEC_PREFIX @"com.retro.recorder.done."
 #define RR_PING_PREFIX @"com.retro.recorder.ping."
 
 static BOOL g_ackTrig = NO;   /* 扩展收到了保存指令 */
@@ -123,6 +136,7 @@ static BOOL g_ackDone = NO;   /* 已写入相册 */
 static BOOL g_ackFail = NO;   /* 写入失败 */
 static BOOL g_ackOn = NO;
 static int  g_ackToken = 0;   /* 非空 observer 句柄：CF 对 NULL observer 的处理不可靠 */
+static NSInteger g_ackDoneSec = -1;   /* 扩展回传的实际落盘秒数（-1 = 没回） */
 
 static void RRAckCallback(CFNotificationCenterRef center, void *observer,
                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
@@ -132,6 +146,10 @@ static void RRAckCallback(CFNotificationCenterRef center, void *observer,
     else if ([n isEqualToString:RR_ACK_PING]) g_ackPing = YES;
     else if ([n isEqualToString:RR_ACK_DONE]) g_ackDone = YES;
     else if ([n isEqualToString:RR_ACK_FAIL]) g_ackFail = YES;
+    else if ([n hasPrefix:RR_DONE_SEC_PREFIX]) {
+        g_ackDoneSec = [[n substringFromIndex:[RR_DONE_SEC_PREFIX length]] integerValue];
+        g_ackDone = YES;
+    }
     else if ([n hasPrefix:RR_LOG_PREFIX]) {
         /* 老协议兼容：万一通配还能用，日志里的 TRIG_SAVE 也算数 */
         NSString *body = [n substringFromIndex:[RR_LOG_PREFIX length]];
@@ -139,9 +157,11 @@ static void RRAckCallback(CFNotificationCenterRef center, void *observer,
     }
 }
 
-/* 四个固定回执名逐个注册（保证收得到），再挂一个通配收老格式日志（可能无效，无害）。 */
+/* 四个固定回执名逐个注册（保证收得到），外加 done.<秒数> 通道的全量注册，
+   最后挂一个通配收老格式日志（可能无效，无害）。 */
 static void RRAckWatchBegin(void) {
     g_ackTrig = g_ackPing = g_ackDone = g_ackFail = NO;
+    g_ackDoneSec = -1;
     if (g_ackOn) return;
     g_ackOn = YES;
     CFNotificationCenterRef c = CFNotificationCenterGetDarwinNotifyCenter();
@@ -151,6 +171,14 @@ static void RRAckWatchBegin(void) {
         CFNotificationCenterAddObserver(c, obs, RRAckCallback,
                                         (__bridge CFStringRef)names[i], NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
+    }
+    // done.<1...600>：扩展会把实际落盘秒数编在名字里回传，同样只能靠全名注册收到
+    for (NSInteger s = 1; s <= RR_SEC_MAX; s++) {
+        CFStringRef n = CFStringCreateWithFormat(NULL, NULL, CFSTR("%@%ld"),
+                                                 (__bridge CFStringRef)RR_DONE_SEC_PREFIX, (long)s);
+        CFNotificationCenterAddObserver(c, obs, RRAckCallback, n, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFRelease(n);
     }
     CFNotificationCenterAddObserver(c, obs, RRAckCallback, NULL, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
@@ -236,6 +264,8 @@ static void RRCenterToast(NSString *text, NSInteger style) {
     lb.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
     lb.textAlignment = NSTextAlignmentCenter;
     lb.numberOfLines = 2;
+    lb.adjustsFontSizeToFitWidth = YES;   // 文案偶尔会长一点，自动缩比截断好
+    lb.minimumScaleFactor = 0.7;
     UIColor *bg = [[UIColor blackColor] colorWithAlphaComponent:0.85];
     if (style == 0) {
         bg = [UIColor colorWithRed:0.13 green:0.55 blue:0.33 alpha:0.92];
@@ -558,6 +588,9 @@ static void RRRefreshPanel(void) {
     // 先探活再下指令，这样 3 秒后能区分「扩展不在」和「扩展在但指令没送到」
     RRAckWatchBegin();
     RRPostPing();
+    // 下指令前先把保留窗口顶上去。窗口窄的时候旧分片会被提前删掉，
+    // 等收到指令再抬就已经来不及了 —— 被删的料回不来
+    RRPostCfg();
     // 连发三次（0 / 0.25 / 0.5 秒）：单条 Darwin 通知偶发丢失时后面两次还能补上
     RRPostTrigger();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
@@ -578,9 +611,19 @@ static void RRRefreshPanel(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         BOOL trig = g_ackTrig, ping = g_ackPing, done = g_ackDone, fail = g_ackFail;
+        NSInteger real = g_ackDoneSec;
         RRAckWatchEnd();
         if (done || trig) {
-            RRCenterToast([NSString stringWithFormat:@"已保存\n最近 %ld 秒", (long)sec], 0);
+            // 报真实落盘秒数：请求 300 秒但缓冲只有 115 秒时，
+            // 照着请求值报「已保存 最近 300 秒」等于骗人，用户会以为导出算错了
+            if (real > 0 && real + 3 < sec) {
+                RRCenterToast([NSString stringWithFormat:@"已保存 %ld 秒\n（要 %ld 秒，还没录够）",
+                               (long)real, (long)sec], 2);
+            } else if (real > 0) {
+                RRCenterToast([NSString stringWithFormat:@"已保存\n%ld 秒", (long)real], 0);
+            } else {
+                RRCenterToast([NSString stringWithFormat:@"已保存\n最近 %ld 秒", (long)sec], 0);
+            }
         } else if (fail) {
             RRCenterToast(@"保存失败\n去相册权限看看", 1);
         } else if (ping) {
@@ -820,6 +863,9 @@ static void RRAttach(void) {
                 RRPostRes();
                 RRPostCfg();
             });
+            // 之后持续补发：保留窗口掉了就会丢料，只同步一次不够
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ RRCfgKeepAlive(); });
         }
     }
 
